@@ -14,6 +14,9 @@ dependencies = [
   "httpx[socks]==0.28.1",
   "openai==2.46.0",
   "powermem==1.1.7",
+  # PowerMem 1.1.7 requires greenlet <3 on Python 3.11.  Keep the lock
+  # resolver from selecting an incompatible transitive release.
+  "greenlet==2.0.2; python_version < '3.12'",
   "pyobvector[pyseekdb]==0.2.26",
   "deepagents==0.5.7",
   "langchain==1.2.17",
