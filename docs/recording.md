@@ -3,7 +3,7 @@
 此录屏完全使用本地 in-memory 后端和确定性证据模式；不需要 SeekDB、PowerMem Server 或 LLM 凭据。
 
 ```powershell
-cd docs/my/demo/ai_intel_bureau/web
+cd web
 npm run record:demo
 ```
 
