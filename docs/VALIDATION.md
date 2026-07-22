@@ -33,7 +33,7 @@ DEMO_MODE=full
 配置完成后，按顺序执行：
 
 ```powershell
-cd docs/my/demo/ai_intel_bureau/backend
+cd backend
 python -m app.preflight --strict
 python -m app.preflight --check-remote
 python -m app.smoke_memory

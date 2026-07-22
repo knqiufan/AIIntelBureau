@@ -13,7 +13,7 @@
 先 dry run，只读取本地账本中的案件数和同一 case 作用域内的 PowerMem 卡片数：
 
 ```powershell
-cd docs/my/demo/ai_intel_bureau/backend
+cd backend
 python -m app.clear_demo_data
 ```
 
