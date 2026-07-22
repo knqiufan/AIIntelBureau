@@ -12,7 +12,7 @@ dependencies = [
   "pydantic==2.12.4",
   "pydantic-settings==2.12.0",
   "httpx[socks]==0.28.1",
-  "openai==2.38.0",
+  "openai==2.46.0",
   "powermem==1.1.7",
   "pyobvector[pyseekdb]==0.2.26",
   "deepagents==0.5.7",
