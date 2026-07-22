@@ -18,6 +18,9 @@ dependencies = [
   # resolver from selecting an incompatible transitive release.
   "greenlet==2.0.2; python_version < '3.12'",
   "pyobvector[pyseekdb]==0.2.26",
+  # pyseekdb leaves this Linux runtime dependency unpinned in its metadata;
+  # declare it here so pip's hash-enforced production install remains closed.
+  "pylibseekdb==1.3.0.post3; sys_platform == 'linux'",
   "deepagents==0.5.7",
   "langchain==1.2.17",
   "langchain-openai==1.2.2",
