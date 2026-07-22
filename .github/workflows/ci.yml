@@ -27,8 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with: { python-version: "3.11" }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22", cache: "npm", cache-dependency-path: web/package-lock.json }
+      - name: Install backend required by browser tests
+        run: python -m pip install --upgrade pip && python -m pip install --require-hashes -r backend/requirements.lock && python -m pip check
       - name: Install locked frontend dependencies
         working-directory: web
         run: npm ci
@@ -55,6 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Provide non-secret Compose defaults for model validation
+        run: cp .env.example .env
       - name: Validate production Compose model
         run: docker compose --profile production config --quiet
       - name: Build production images
