@@ -19,8 +19,9 @@ def test_preflight_accepts_complete_remote_full_configuration(settings):
         "seekdb_user": "root@tenant#cluster",
         "seekdb_password": "configured-for-test-only",
         "llm_api_key": "configured-for-test-only",
-        "embedding_api_key": "configured-for-test-only",
-        "embedding_model": "embedding-test",
+            "embedding_api_key": "configured-for-test-only",
+            "embedding_model": "embedding-test",
+            "demo_external_data_egress_approved": True,
     })
     checks = configuration_checks(complete)
 

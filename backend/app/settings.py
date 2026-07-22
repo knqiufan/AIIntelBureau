@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+from urllib.parse import urlparse
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -30,9 +31,21 @@ class Settings(BaseSettings):
 
     demo_env: Literal["development", "production"] = "development"
     demo_mode: Literal["full", "degrade"] = "degrade"
-    demo_allow_freeform_whisper: bool = True
+    # Free-form text is an opt-in teaching aid.  A public/production demo must
+    # start from the fixed, reviewed scripts rather than accepting arbitrary
+    # audience input.
+    demo_allow_freeform_whisper: bool = False
     demo_disallowed_whisper_terms: str = "身份证,手机号,银行卡号,真实住址"
     demo_whisper_rate_limit_per_minute: int = Field(default=6, ge=0, le=120)
+    demo_session_ttl_seconds: int = Field(default=3600, ge=300, le=86400)
+    demo_api_rate_limit_per_minute: int = Field(default=120, ge=1, le=10_000)
+    demo_sse_connections_per_principal: int = Field(default=2, ge=1, le=20)
+    demo_sse_heartbeat_seconds: int = Field(default=15, ge=5, le=60)
+    demo_sse_max_lifetime_seconds: int = Field(default=3600, ge=60, le=86_400)
+    demo_max_cards_per_space: int = Field(default=80, ge=1, le=99)
+    demo_memory_page_size: int = Field(default=50, ge=1, le=100)
+    demo_llm_max_concurrency: int = Field(default=2, ge=1, le=32)
+    demo_llm_daily_request_budget: int = Field(default=500, ge=0, le=1_000_000)
     # Separate credentials create distinct server-side principals.  The old
     # DEMO_ACCESS_KEY is intentionally not accepted: one shared secret cannot
     # enforce a boundary between the operator and a read-only display.
@@ -45,7 +58,13 @@ class Settings(BaseSettings):
     demo_warmup: bool = False
     demo_state_db_path: str = "./data/ai_intel_bureau_state.sqlite3"
     demo_data_retention: Literal["persistent", "ephemeral"] = "persistent"
+    demo_persistent_retention_days: int = Field(default=7, ge=1, le=365)
+    # External LLM and embedding providers receive only reviewed scripted
+    # content after a deployment owner explicitly approves that data flow.
+    demo_external_data_egress_approved: bool = False
     demo_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080"
+    demo_cors_methods: str = "GET,POST,DELETE,OPTIONS"
+    demo_cors_headers: str = "Content-Type,X-CSRF-Token,X-Request-ID"
     demo_log_level: str = "INFO"
     # P4 is intentionally feature-flagged. The audit projection is harmless
     # and on by default; the three experimental surfaces remain off until an
@@ -109,17 +128,55 @@ class Settings(BaseSettings):
             problems.append("DEMO_ACCESS_COOKIE_SECURE must be true")
         if not self.demo_trusted_https_proxy:
             problems.append("DEMO_TRUSTED_HTTPS_PROXY must be true")
-        if not self.cors_origins or any(not origin.startswith("https://") for origin in self.cors_origins):
-            problems.append("DEMO_CORS_ORIGINS must contain only explicit HTTPS origins")
+        if self.demo_allow_freeform_whisper:
+            problems.append("DEMO_ALLOW_FREEFORM_WHISPER must remain false in production")
+        configured_origins = [item.strip().rstrip("/") for item in self.demo_cors_origins.split(",") if item.strip()]
+        if not configured_origins or any(not self._is_safe_origin(origin, production=True) for origin in configured_origins):
+            problems.append("DEMO_CORS_ORIGINS must contain only explicit HTTPS origins without wildcards, paths, or non-default ports")
         if self.demo_enable_smoke:
             problems.append("DEMO_ENABLE_SMOKE must remain false in production")
+        if self.demo_mode == "full" and not self.demo_external_data_egress_approved:
+            problems.append("DEMO_EXTERNAL_DATA_EGRESS_APPROVED must be true before full mode can send data to model providers")
         if problems:
             raise ValueError("unsafe production configuration: " + "; ".join(problems))
         return self
 
     @property
     def cors_origins(self) -> list[str]:
-        return [item.strip() for item in self.demo_cors_origins.split(",") if item.strip()]
+        origins = [item.strip().rstrip("/") for item in self.demo_cors_origins.split(",") if item.strip()]
+        if not origins or any(not self._is_safe_origin(origin, production=self.demo_env == "production") for origin in origins):
+            raise ValueError("DEMO_CORS_ORIGINS contains an unsafe origin")
+        return origins
+
+    @staticmethod
+    def _is_safe_origin(origin: str, *, production: bool) -> bool:
+        if "*" in origin or " " in origin:
+            return False
+        parsed = urlparse(origin)
+        if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+            return False
+        if not parsed.hostname or parsed.username or parsed.password:
+            return False
+        if production:
+            return parsed.scheme == "https" and parsed.port in {None, 443}
+        if parsed.scheme == "https":
+            return parsed.port in {None, 443}
+        return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+    @property
+    def cors_methods(self) -> list[str]:
+        methods = [item.strip().upper() for item in self.demo_cors_methods.split(",") if item.strip()]
+        if not methods or "*" in methods or any(method not in {"GET", "POST", "DELETE", "OPTIONS"} for method in methods):
+            raise ValueError("DEMO_CORS_METHODS must be an explicit minimal method set")
+        return methods
+
+    @property
+    def cors_headers(self) -> list[str]:
+        headers = [item.strip() for item in self.demo_cors_headers.split(",") if item.strip()]
+        allowed = {"content-type", "x-csrf-token", "x-request-id"}
+        if not headers or any(header.casefold() not in allowed for header in headers):
+            raise ValueError("DEMO_CORS_HEADERS must be an explicit minimal header set")
+        return headers
 
     @property
     def disallowed_whisper_terms(self) -> tuple[str, ...]:
@@ -128,7 +185,11 @@ class Settings(BaseSettings):
 
     @property
     def llm_is_configured(self) -> bool:
-        return self.demo_mode == "full" and bool(self.llm_api_key.strip())
+        return (
+            self.demo_mode == "full"
+            and bool(self.llm_api_key.strip())
+            and self.demo_external_data_egress_approved
+        )
 
     @property
     def unsafe_fixture_is_available(self) -> bool:
@@ -141,7 +202,11 @@ class Settings(BaseSettings):
 
     @property
     def embedding_is_configured(self) -> bool:
-        return bool(self.embedding_api_key.strip()) and not self.embedding_model.startswith("YOUR_")
+        return (
+            self.demo_external_data_egress_approved
+            and bool(self.embedding_api_key.strip())
+            and not self.embedding_model.startswith("YOUR_")
+        )
 
     @property
     def memory_is_configured(self) -> bool:

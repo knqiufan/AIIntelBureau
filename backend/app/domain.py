@@ -103,7 +103,11 @@ class CaseState(BaseModel):
     case_id: str
     script_id: str | None = None
     version: int = 0
-    status: Literal["empty", "ready"] = "empty"
+    # An epoch separates a newly reset script from its historical events.
+    # Consumers use it to avoid displaying a previous bulletin-board entry as
+    # if it belonged to the current case state.
+    epoch: int = Field(default=0, ge=0)
+    status: Literal["empty", "loading", "ready", "resetting"] = "empty"
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -277,6 +281,8 @@ class AuditEntry(BaseModel):
     source_agent_id: AgentId
     source_memory_id: str
     public_card_id: str
+    epoch: int = Field(ge=0)
+    is_current: bool
 
 
 class AuditTimeline(BaseModel):
@@ -334,4 +340,6 @@ class MetricsView(BaseModel):
     http_requests_total: int = Field(ge=0)
     http_errors_total: int = Field(ge=0)
     http_errors_by_status: dict[str, int]
+    sse_connections_active: int = Field(ge=0)
+    cleanup_tasks_pending: int = Field(ge=0)
     case_ready_rate_percent: float = Field(ge=0, le=100)

@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -21,7 +21,7 @@ from .domain import AdvancedFeaturesView, AgentId, AnswerView, AuditTimeline, Bo
 from .memory import MemoryGateway, build_gateway
 from .observability import RuntimeMetrics, configure_logging, request_id_context
 from .repository import CaseNotFoundError, StateRepository, VersionConflictError
-from .services import AccessViolationError, AdvancedFeatureDisabledError, BureauService, FreeformDisabledError, MemoryUnavailableError, UnsafeWhisperError, WhisperRateLimitError
+from .services import AccessViolationError, AdvancedFeatureDisabledError, BureauService, CleanupPendingError, FreeformDisabledError, LlmBudgetError, MemoryUnavailableError, PublicationPendingError, ScriptConflictError, ScriptLoadError, StorageQuotaError, UnsafeWhisperError, WhisperRateLimitError
 from .settings import Settings, get_settings
 
 
@@ -37,45 +37,46 @@ ACCESS_COOKIE_NAMES = {
     Principal.STAGE: "ai_intel_bureau_stage_session",
 }
 
+CSRF_COOKIE_NAMES = {
+    Principal.OPERATOR: "ai_intel_bureau_operator_csrf",
+    Principal.STAGE: "ai_intel_bureau_stage_csrf",
+}
 
-def _access_cookie_value(access_key: str, principal: Principal) -> str:
-    """A stable opaque session value scoped to one server-side principal."""
-    message = f"ai-intel-bureau-session-v2:{principal.value}".encode("utf-8")
-    return hmac.new(access_key.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
-
-def _principal_from_request(request: Request, settings: Settings) -> Principal:
+def _principal_from_request(request: Request, settings: Settings, repository: StateRepository) -> tuple[Principal, dict[str, str] | None]:
     """Resolve credentials without treating a case ID as authorization."""
     supplied_key = request.headers.get("X-Demo-Access-Key", "")
     operator_key = settings.demo_operator_access_key.strip()
     stage_key = settings.demo_stage_access_key.strip()
-    if operator_key and hmac.compare_digest(supplied_key, operator_key):
-        return Principal.OPERATOR
-    if stage_key and hmac.compare_digest(supplied_key, stage_key):
-        return Principal.STAGE
+    # The passcode is an exchange credential, never a general API credential.
+    # This keeps it out of the browser after the HttpOnly session is created.
+    if request.url.path == "/api/session":
+        if operator_key and hmac.compare_digest(supplied_key, operator_key):
+            return Principal.OPERATOR, None
+        if stage_key and hmac.compare_digest(supplied_key, stage_key):
+            return Principal.STAGE, None
 
-    valid_operator_cookie = operator_key and hmac.compare_digest(
-        request.cookies.get(ACCESS_COOKIE_NAMES[Principal.OPERATOR], ""),
-        _access_cookie_value(operator_key, Principal.OPERATOR),
-    )
-    valid_stage_cookie = stage_key and hmac.compare_digest(
-        request.cookies.get(ACCESS_COOKIE_NAMES[Principal.STAGE], ""),
-        _access_cookie_value(stage_key, Principal.STAGE),
-    )
+    def session_for(principal: Principal) -> dict[str, str] | None:
+        token = request.cookies.get(ACCESS_COOKIE_NAMES[principal], "")
+        session = repository.access_session(token) if token else None
+        return session if session and session["principal"] == principal.value else None
+
+    operator_session = session_for(Principal.OPERATOR)
+    stage_session = session_for(Principal.STAGE)
     # A browser may hold both cookies after an operator tested the stage.  Keep
     # their roles separate by selecting the cookie appropriate to the route.
     if request.url.path.endswith("/stage-snapshot") or request.url.path.endswith("/stage-events"):
-        if valid_stage_cookie:
-            return Principal.STAGE
-        if valid_operator_cookie:
-            return Principal.OPERATOR
-    if valid_operator_cookie:
-        return Principal.OPERATOR
-    if valid_stage_cookie:
-        return Principal.STAGE
+        if stage_session:
+            return Principal.STAGE, stage_session
+        if operator_session:
+            return Principal.OPERATOR, operator_session
+    if operator_session:
+        return Principal.OPERATOR, operator_session
+    if stage_session:
+        return Principal.STAGE, stage_session
     if settings.demo_env == "development" and not operator_key and not stage_key:
-        return Principal.DEVELOPMENT
-    return Principal.PUBLIC
+        return Principal.DEVELOPMENT, None
+    return Principal.PUBLIC, None
 
 
 def _require_principal(request: Request, expected: Principal) -> None:
@@ -98,6 +99,8 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if settings.demo_data_retention == "ephemeral":
             service.clear_ephemeral_data()
+        else:
+            service.enforce_retention()
         if settings.demo_warmup and settings.memory_is_configured:
             service.warmup()
         try:
@@ -111,7 +114,14 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
 
     app = FastAPI(title="AI 情报局 API", version="0.1.0", lifespan=lifespan)
     app.state.service = service
-    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=settings.cors_methods,
+        allow_headers=settings.cors_headers,
+        expose_headers=["X-CSRF-Token", "X-Request-ID"],
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
@@ -121,7 +131,27 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
         request_token = request_id_context.set(request_id)
         started = time.perf_counter()
         try:
-            request.state.principal = _principal_from_request(request, settings)
+            principal, session = _principal_from_request(request, settings, repository)
+            request.state.principal = principal
+            request.state.session = session
+            request.state.caller_id = session["token_hash"] if session else (request.client.host if request.client else "unknown")
+            if request.url.path not in {"/api/healthz", "/api/readyz"} and not request.url.path.endswith("/public-snapshot"):
+                api_limit = settings.demo_api_rate_limit_per_minute if settings.demo_env == "production" else max(settings.demo_api_rate_limit_per_minute, 1000)
+                if not repository.consume_rate_limit("http", request.state.caller_id, api_limit):
+                    response = _error(429, "REQUEST_RATE_LIMIT", "请求过于频繁，请稍后再试。")
+                    response.headers["X-Request-ID"] = request_id
+                    runtime_metrics.record_response(response.status_code)
+                    return response
+            # Cookie-backed writes use a synchronizer token.  SameSite=Lax is
+            # retained as defence in depth; the token protects future embedding
+            # or browser-policy changes from silently widening CSRF exposure.
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path != "/api/session" and session:
+                csrf = request.headers.get("X-CSRF-Token", "")
+                if not csrf or not hmac.compare_digest(hashlib.sha256(csrf.encode("utf-8")).hexdigest(), session["csrf_token_hash"]):
+                    response = _error(403, "CSRF_TOKEN_REQUIRED", "会话写操作需要有效的 CSRF 令牌。")
+                    response.headers["X-Request-ID"] = request_id
+                    runtime_metrics.record_response(response.status_code)
+                    return response
             response = await call_next(request)
         except Exception as exc:
             logger.error("http.request_failed", extra={"request_id": request_id, "path": request.url.path, "mode": settings.demo_mode, "failure_type": type(exc).__name__})
@@ -162,6 +192,30 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
     async def whisper_rate_limited(_: Request, exc: WhisperRateLimitError):
         return _error(429, "WHISPER_RATE_LIMIT", "该角色的自由耳语过于频繁，请稍后再试。")
 
+    @app.exception_handler(StorageQuotaError)
+    async def storage_quota(_: Request, exc: StorageQuotaError):
+        return _error(429, "STORAGE_QUOTA", str(exc))
+
+    @app.exception_handler(LlmBudgetError)
+    async def llm_budget(_: Request, exc: LlmBudgetError):
+        return _error(429, "LLM_BUDGET", str(exc))
+
+    @app.exception_handler(ScriptConflictError)
+    async def script_conflict(_: Request, exc: ScriptConflictError):
+        return _error(409, "SCRIPT_CONFLICT", str(exc))
+
+    @app.exception_handler(ScriptLoadError)
+    async def script_load(_: Request, exc: ScriptLoadError):
+        return _error(503, "SCRIPT_LOAD_FAILED", str(exc))
+
+    @app.exception_handler(CleanupPendingError)
+    async def cleanup_pending(_: Request, exc: CleanupPendingError):
+        return _error(503, "CLEANUP_PENDING", str(exc))
+
+    @app.exception_handler(PublicationPendingError)
+    async def publication_pending(_: Request, exc: PublicationPendingError):
+        return _error(409, "PUBLICATION_PENDING", str(exc))
+
     @app.exception_handler(MemoryUnavailableError)
     async def memory_unavailable(_: Request, exc: MemoryUnavailableError):
         return _error(503, "MEMORY_UNAVAILABLE", str(exc))
@@ -188,15 +242,42 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
         if principal not in {Principal.OPERATOR, Principal.STAGE}:
             return _error(401, "ACCESS_KEY_REQUIRED", "需要有效的局长或大屏访问口令。")
         response = Response(status_code=204)
-        key = settings.demo_operator_access_key if principal == Principal.OPERATOR else settings.demo_stage_access_key
+        token, csrf_token = repository.create_access_session(principal.value, settings.demo_session_ttl_seconds)
         response.set_cookie(
             ACCESS_COOKIE_NAMES[principal],
-            _access_cookie_value(key, principal),
+            token,
             httponly=True,
             secure=settings.demo_access_cookie_secure,
             samesite="lax",
             path="/",
+            max_age=settings.demo_session_ttl_seconds,
         )
+        response.set_cookie(
+            CSRF_COOKIE_NAMES[principal],
+            csrf_token,
+            httponly=False,
+            secure=settings.demo_access_cookie_secure,
+            samesite="lax",
+            path="/",
+            max_age=settings.demo_session_ttl_seconds,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-CSRF-Token"] = csrf_token
+        return response
+
+    @app.delete("/api/session", status_code=204)
+    def close_activity_session(request: Request):
+        """Revoke the current server-side session and expire browser cookies."""
+        principal: Principal = request.state.principal
+        if principal not in {Principal.OPERATOR, Principal.STAGE}:
+            return _error(401, "ACCESS_KEY_REQUIRED", "没有可撤销的活动会话。")
+        token = request.cookies.get(ACCESS_COOKIE_NAMES[principal], "")
+        if token:
+            repository.revoke_access_session(token)
+        response = Response(status_code=204)
+        response.delete_cookie(ACCESS_COOKIE_NAMES[principal], path="/")
+        response.delete_cookie(CSRF_COOKIE_NAMES[principal], path="/")
+        response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.get("/api/advanced/status", response_model=AdvancedFeaturesView)
@@ -235,7 +316,7 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
     @app.post("/api/cases/{case_id}/whispers", response_model=WhisperResponse)
     def whisper(case_id: str, body: WhisperRequest, request: Request):
         _require_principal(request, Principal.OPERATOR)
-        card, snapshot = service.whisper(case_id, body.agent_id, body.text, body.expected_version, request.state.request_id)
+        card, snapshot = service.whisper(case_id, body.agent_id, body.text, body.expected_version, request.state.request_id, request.state.caller_id)
         return {"card": card, "snapshot": snapshot}
 
     @app.post("/api/cases/{case_id}/interrogations", response_model=AnswerView)
@@ -281,35 +362,84 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
         aggregate["case_ready_rate_percent"] = round((aggregate["cases_ready"] / aggregate["cases_total"] * 100) if aggregate["cases_total"] else 0, 2)
         return aggregate
 
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus_metrics():
+        """Prometheus exposition for the internal API network only.
+
+        Do not put this endpoint behind the browser proxy.  Metric labels are
+        fixed status codes/types, never case IDs, principals, paths, text, or
+        other high-cardinality data.
+        """
+        aggregate = service.metrics()
+        aggregate.update(runtime_metrics.snapshot())
+        lines = [
+            "# HELP ai_intel_bureau_http_requests_total Completed HTTP requests.",
+            "# TYPE ai_intel_bureau_http_requests_total counter",
+            f"ai_intel_bureau_http_requests_total {aggregate['http_requests_total']}",
+            "# HELP ai_intel_bureau_sse_connections_active Current SSE connections.",
+            "# TYPE ai_intel_bureau_sse_connections_active gauge",
+            f"ai_intel_bureau_sse_connections_active {aggregate['sse_connections_active']}",
+            "# HELP ai_intel_bureau_cleanup_tasks_pending Remote cleanup tasks awaiting retry.",
+            "# TYPE ai_intel_bureau_cleanup_tasks_pending gauge",
+            f"ai_intel_bureau_cleanup_tasks_pending {aggregate['cleanup_tasks_pending']}",
+        ]
+        for status_code, count in sorted(aggregate["http_errors_by_status"].items()):
+            lines.append(f'ai_intel_bureau_http_errors_total{{status="{status_code}"}} {count}')
+        return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
+
     @app.get("/api/cases/{case_id}/operator-events")
-    async def operator_events(case_id: str, request: Request, after_event_id: int = 0):
+    async def operator_events(case_id: str, request: Request, after_event_id: int = Query(default=0, ge=0)):
         _require_principal(request, Principal.OPERATOR)
         service.snapshot(case_id)  # Validate before returning a long-lived connection.
+        connection_id = repository.acquire_sse_connection(request.state.caller_id, settings.demo_sse_connections_per_principal, settings.demo_sse_max_lifetime_seconds)
+        if not connection_id:
+            return _error(429, "SSE_CONNECTION_LIMIT", "该会话的实时连接已达到上限。")
 
         async def stream() -> AsyncIterator[str]:
             cursor = after_event_id
-            while True:
-                for event in service.events_after(case_id, cursor):
-                    cursor = event.event_id
-                    yield f"id: {event.event_id}\nevent: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.5)
+            deadline = time.monotonic() + settings.demo_sse_max_lifetime_seconds
+            next_heartbeat = time.monotonic() + settings.demo_sse_heartbeat_seconds
+            try:
+                while time.monotonic() < deadline:
+                    events = service.events_after(case_id, cursor)
+                    for event in events:
+                        cursor = event.event_id
+                        yield f"id: {event.event_id}\nevent: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
+                    if time.monotonic() >= next_heartbeat:
+                        yield ": heartbeat\n\n"
+                        next_heartbeat = time.monotonic() + settings.demo_sse_heartbeat_seconds
+                    await asyncio.sleep(0.5)
+            finally:
+                repository.release_sse_connection(connection_id)
 
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
     @app.get("/api/cases/{case_id}/stage-events")
-    async def stage_events(case_id: str, request: Request, after_event_id: int = 0):
+    async def stage_events(case_id: str, request: Request, after_event_id: int = Query(default=0, ge=0)):
         _require_principal(request, Principal.STAGE)
         service.stage_snapshot(case_id)  # Validate before returning a long-lived connection.
+        connection_id = repository.acquire_sse_connection(request.state.caller_id, settings.demo_sse_connections_per_principal, settings.demo_sse_max_lifetime_seconds)
+        if not connection_id:
+            return _error(429, "SSE_CONNECTION_LIMIT", "该会话的实时连接已达到上限。")
 
         async def stream() -> AsyncIterator[str]:
             cursor = after_event_id
-            while True:
-                for event in service.stage_events_after(case_id, cursor):
-                    cursor = event.event_id
-                    yield f"id: {event.event_id}\nevent: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.5)
+            deadline = time.monotonic() + settings.demo_sse_max_lifetime_seconds
+            next_heartbeat = time.monotonic() + settings.demo_sse_heartbeat_seconds
+            try:
+                while time.monotonic() < deadline:
+                    events = service.stage_events_after(case_id, cursor)
+                    for event in events:
+                        cursor = event.event_id
+                        yield f"id: {event.event_id}\nevent: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
+                    if time.monotonic() >= next_heartbeat:
+                        yield ": heartbeat\n\n"
+                        next_heartbeat = time.monotonic() + settings.demo_sse_heartbeat_seconds
+                    await asyncio.sleep(0.5)
+            finally:
+                repository.release_sse_connection(connection_id)
 
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
     if settings.demo_enable_smoke:
         @app.post("/api/_smoke/password-flow")

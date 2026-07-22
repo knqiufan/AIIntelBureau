@@ -9,6 +9,12 @@ from app.repository import StateRepository
 from app.settings import Settings
 
 
+def establish_session(client: TestClient, key: str) -> dict[str, str]:
+    response = client.post("/api/session", headers={"X-Demo-Access-Key": key})
+    assert response.status_code == 204
+    return {"X-CSRF-Token": client.cookies.get("ai_intel_bureau_operator_csrf", "")}
+
+
 def test_api_contract_and_smoke_endpoint(settings):
     app = create_app(settings=settings, gateway=InMemoryGateway(), repository=StateRepository(settings.demo_state_db_path))
     client = TestClient(app)
@@ -17,7 +23,7 @@ def test_api_contract_and_smoke_endpoint(settings):
     assert created["case"]["version"] == 0
     loaded = client.post(f"/api/cases/{created['case']['case_id']}/script", json={"script_id": "password", "expected_version": 0})
     assert loaded.status_code == 200
-    answer = client.post(f"/api/cases/{created['case']['case_id']}/interrogations", json={"agent_id": "detective", "question": "保险箱密码是多少？", "expected_version": 1})
+    answer = client.post(f"/api/cases/{created['case']['case_id']}/interrogations", json={"agent_id": "detective", "question": "保险箱密码是多少？", "expected_version": loaded.json()["case"]["version"]})
     assert answer.status_code == 200
     assert answer.json()["certainty"] == "unknown"
     assert client.get("/api/healthz").status_code == 200
@@ -147,7 +153,7 @@ def test_role_scoped_access_sessions_protect_game_routes_but_not_health(settings
     assert client.get("/api/healthz").status_code == 200
     denied = client.post("/api/cases")
     session = client.post("/api/session", headers={"X-Demo-Access-Key": "operator-passphrase-12345"})
-    allowed = client.post("/api/cases")
+    allowed = client.post("/api/cases", headers={"X-CSRF-Token": client.cookies.get("ai_intel_bureau_operator_csrf", "")})
 
     assert denied.status_code == 401
     assert denied.json()["detail"]["code"] == "ACCESS_KEY_REQUIRED"
@@ -169,27 +175,29 @@ def test_operator_stage_and_public_projections_enforce_role_and_do_not_leak_priv
         demo_cors_origins="https://demo.example.test",
     )
     app = create_app(settings=settings, gateway=InMemoryGateway(), repository=StateRepository(settings.demo_state_db_path))
-    client = TestClient(app)
-    operator_headers = {"X-Demo-Access-Key": settings.demo_operator_access_key}
-    stage_headers = {"X-Demo-Access-Key": settings.demo_stage_access_key}
+    anonymous = TestClient(app, base_url="https://testserver")
+    operator = TestClient(app, base_url="https://testserver")
+    stage = TestClient(app, base_url="https://testserver")
+    operator_headers = establish_session(operator, settings.demo_operator_access_key)
+    stage_headers = establish_session(stage, settings.demo_stage_access_key)
 
-    first_case = client.post("/api/cases", headers=operator_headers).json()["case"]
-    loaded = client.post(
+    first_case = operator.post("/api/cases", headers=operator_headers).json()["case"]
+    loaded = operator.post(
         f"/api/cases/{first_case['case_id']}/script",
         headers=operator_headers,
         json={"script_id": "password", "expected_version": first_case["version"]},
     )
     assert loaded.status_code == 200
-    second_case = client.post("/api/cases", headers=operator_headers).json()["case"]
+    second_case = operator.post("/api/cases", headers=operator_headers).json()["case"]
 
-    unauthenticated_operator = client.get(f"/api/cases/{first_case['case_id']}/operator-snapshot")
-    unauthenticated_stage = client.get(f"/api/cases/{first_case['case_id']}/stage-snapshot")
-    wrong_role_operator = client.get(f"/api/cases/{first_case['case_id']}/operator-snapshot", headers=stage_headers)
-    wrong_role_stage = client.get(f"/api/cases/{first_case['case_id']}/stage-snapshot", headers=operator_headers)
-    operator_snapshot = client.get(f"/api/cases/{first_case['case_id']}/operator-snapshot", headers=operator_headers)
-    stage_snapshot = client.get(f"/api/cases/{first_case['case_id']}/stage-snapshot", headers=stage_headers)
-    public_snapshot = client.get(f"/api/cases/{first_case['case_id']}/public-snapshot")
-    other_case_stage = client.get(f"/api/cases/{second_case['case_id']}/stage-snapshot", headers=stage_headers)
+    unauthenticated_operator = anonymous.get(f"/api/cases/{first_case['case_id']}/operator-snapshot")
+    unauthenticated_stage = anonymous.get(f"/api/cases/{first_case['case_id']}/stage-snapshot")
+    wrong_role_operator = stage.get(f"/api/cases/{first_case['case_id']}/operator-snapshot")
+    wrong_role_stage = operator.get(f"/api/cases/{first_case['case_id']}/stage-snapshot")
+    operator_snapshot = operator.get(f"/api/cases/{first_case['case_id']}/operator-snapshot")
+    stage_snapshot = stage.get(f"/api/cases/{first_case['case_id']}/stage-snapshot")
+    public_snapshot = anonymous.get(f"/api/cases/{first_case['case_id']}/public-snapshot")
+    other_case_stage = stage.get(f"/api/cases/{second_case['case_id']}/stage-snapshot")
 
     private_text = "保险箱密码是 0427"
     assert unauthenticated_operator.status_code == 401

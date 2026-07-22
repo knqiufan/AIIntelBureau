@@ -54,7 +54,15 @@ function OperatorApp({ initialCaseId }: { initialCaseId: string | null }): JSX.E
   const [accessRequired, setAccessRequired] = useState(false);
   const [authRevision, setAuthRevision] = useState(0);
   const [loading, setLoading] = useState<string | null>(null);
-  const [guide, setGuide] = useState<GuideState>(emptyGuideState);
+  const [guide, setGuide] = useState<GuideState>(() => {
+    if (!initialCaseId) return emptyGuideState();
+    try {
+      const saved = sessionStorage.getItem(`ai-intel-bureau:guide:${initialCaseId}`);
+      return saved ? { ...emptyGuideState(), ...JSON.parse(saved) } : emptyGuideState();
+    } catch {
+      return emptyGuideState();
+    }
+  });
   const [advanced, setAdvanced] = useState<AdvancedFeatures | null>(null);
 
   const refreshSnapshot = async (id = caseId) => {
@@ -102,16 +110,36 @@ function OperatorApp({ initialCaseId }: { initialCaseId: string | null }): JSX.E
 
   useEffect(() => {
     if (!caseId) return;
-    setGuide(emptyGuideState());
+    try {
+      const saved = sessionStorage.getItem(`ai-intel-bureau:guide:${caseId}`);
+      setGuide(saved ? { ...emptyGuideState(), ...JSON.parse(saved) } : emptyGuideState());
+    } catch {
+      setGuide(emptyGuideState());
+    }
+    let refreshTimer: number | undefined;
+    const queueSnapshotRefresh = () => {
+      // A replay can contain many fine-grained events.  Coalesce them into a
+      // single snapshot request rather than turning reconnect recovery into a
+      // burst of read traffic and UI redraws.
+      if (refreshTimer !== undefined) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined;
+        void refreshSnapshot(caseId).catch(() => undefined);
+      }, 120);
+    };
     const unsubscribe = api.subscribeEvents(
       caseId,
       (event: GameEvent) => {
         try {
-          setGuide((current) => applyGuideEvent(current, event));
+          setGuide((current) => {
+            const next = applyGuideEvent(current, event);
+            sessionStorage.setItem(`ai-intel-bureau:guide:${caseId}`, JSON.stringify(next));
+            return next;
+          });
         } catch {
           /* Snapshot refresh remains available. */
         }
-        void refreshSnapshot(caseId).catch(() => undefined);
+        queueSnapshotRefresh();
       },
       (status) => {
         if (status === "error") {
@@ -121,7 +149,10 @@ function OperatorApp({ initialCaseId }: { initialCaseId: string | null }): JSX.E
         }
       },
     );
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId]);
 
@@ -148,6 +179,7 @@ function OperatorApp({ initialCaseId }: { initialCaseId: string | null }): JSX.E
       if (!caseId) return;
       setSnapshot(await api.resetCase(caseId, snapshot?.case.version ?? 0));
       setGuide(emptyGuideState());
+      sessionStorage.removeItem(`ai-intel-bureau:guide:${caseId}`);
     });
 
   if (!snapshot) {
@@ -235,14 +267,35 @@ function StageApp({ caseId }: { caseId: string | null }): JSX.Element {
 
   useEffect(() => {
     if (!caseId || !snapshot) return;
-    return api.subscribeStageEvents(
+    let refreshTimer: number | undefined;
+    const queueSnapshotRefresh = () => {
+      if (refreshTimer !== undefined) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined;
+        void refreshSnapshot().catch(() => undefined);
+      }, 120);
+    };
+    const unsubscribe = api.subscribeStageEvents(
       caseId,
-      () => { void refreshSnapshot().catch(() => undefined); },
+      queueSnapshotRefresh,
       (status) => {
         if (status === "error") setError((current) => current ?? "实时同步暂时断开；正在自动重连。");
         else setError((current) => (current?.startsWith("实时同步") ? null : current));
       },
     );
+    return () => {
+      unsubscribe();
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseId, snapshot?.case.case_id]);
+
+  useEffect(() => {
+    if (!caseId || !snapshot) return;
+    // SSE is the primary path.  This low-frequency read is a recovery guard
+    // for captive networks/proxies that delay an EventSource reconnect.
+    const timer = window.setInterval(() => void refreshSnapshot().catch(() => undefined), 1000);
+    return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId, snapshot?.case.case_id]);
 

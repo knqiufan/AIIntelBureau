@@ -7,6 +7,7 @@ import time
 import uuid
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from .domain import (
@@ -14,7 +15,7 @@ from .domain import (
     BoardAnalysisView, CaseSnapshot, CaseState, Certainty, DomainEvent,
     HealthPart, HealthView, MemoryCard, PublicMemoryCard, PublicSnapshot,
     ROLE_IDS, RetrievalTrace, StageEvent, StageRetrievalView, StageSnapshot,
-    UnsafeFixtureView,
+    UnsafeFixtureView, now_utc,
 )
 from .bureau_analyst import PublicBoardAnalyst
 from .memory import MemoryGateway
@@ -44,6 +45,30 @@ class WhisperRateLimitError(RuntimeError):
     pass
 
 
+class StorageQuotaError(RuntimeError):
+    pass
+
+
+class ScriptConflictError(RuntimeError):
+    pass
+
+
+class ScriptLoadError(RuntimeError):
+    pass
+
+
+class CleanupPendingError(RuntimeError):
+    pass
+
+
+class PublicationPendingError(RuntimeError):
+    pass
+
+
+class LlmBudgetError(RuntimeError):
+    pass
+
+
 class MemoryUnavailableError(RuntimeError):
     pass
 
@@ -69,6 +94,7 @@ class AnswerService:
     def __init__(self, settings: Settings, role_responder: DeepAgentsRoleResponder | None = None) -> None:
         self.settings = settings
         self.role_responder = role_responder or DeepAgentsRoleResponder(settings)
+        self._slots = threading.BoundedSemaphore(settings.demo_llm_max_concurrency)
 
     def deterministic(self, cards: list[MemoryCard]) -> ResponderResult:
         if not cards:
@@ -79,6 +105,8 @@ class AnswerService:
     def answer(self, role: AgentId, question: str, cards: list[MemoryCard]) -> ResponderResult:
         if not cards or not self.settings.llm_is_configured:
             return self.deterministic(cards)
+        if not self._slots.acquire(blocking=False):
+            raise LlmBudgetError("LLM concurrency budget is currently exhausted")
         try:
             response: RoleResponse = self.role_responder.answer(role, question, cards)
             return ResponderResult(response.answer, response.certainty, response.evidence_ids, "deepagents")
@@ -92,6 +120,8 @@ class AnswerService:
             )
             fallback = self.deterministic(cards)
             return ResponderResult(fallback.answer, fallback.certainty, fallback.evidence_ids, "deterministic", type(exc).__name__)
+        finally:
+            self._slots.release()
 
 
 class BureauService:
@@ -106,7 +136,6 @@ class BureauService:
         self.unsafe_fixture_lab = UnsafeFixtureLab()
         self._command_lock = threading.RLock()
         self._last_answers: dict[str, AnswerView] = {}
-        self._whisper_timestamps: dict[tuple[str, AgentId], list[float]] = {}
         self._logger = get_logger()
 
     @staticmethod
@@ -139,6 +168,10 @@ class BureauService:
         if case.version != expected_version:
             raise VersionConflictError(case.case_id)
 
+    def _ensure_space_capacity(self, case_id: str, agent_id: AgentId, additional: int = 1) -> None:
+        if len(self.gateway.list_space(case_id, agent_id)) + additional > self.settings.demo_max_cards_per_space:
+            raise StorageQuotaError("该案件记忆空间已达到容量上限；请重置案件后重试。")
+
     def create_case(self, request_id: str | None = None) -> CaseSnapshot:
         with self._command_lock:
             health_status, _ = self.gateway.health()
@@ -150,12 +183,13 @@ class BureauService:
             self._append(case.case_id, "case.created", request_id, version=case.version, status=case.status)
             return self.snapshot(case.case_id)
 
-    def _advance(self, case: CaseState, expected_version: int, *, script_id: str | None = None, status: str | None = None) -> CaseState:
+    def _advance(self, case: CaseState, expected_version: int, *, script_id: str | None | object = ..., status: str | None = None, epoch: int | None = None) -> CaseState:
         self._require_version(case, expected_version)
         updated = case.model_copy(update={
             "version": case.version + 1,
-            "script_id": script_id if script_id is not None else case.script_id,
+            "script_id": case.script_id if script_id is ... else script_id,
             "status": status if status is not None else case.status,
+            "epoch": epoch if epoch is not None else case.epoch,
         })
         return self.repository.update_case(updated, expected_version)
 
@@ -167,14 +201,41 @@ class BureauService:
             self._require_version(case, expected_version)
             if case.script_id == script_id:
                 return self.snapshot(case_id)
+            if case.status != "empty":
+                raise ScriptConflictError("案件已加载其他剧本；请先重置后再加载。")
             request_id = self._request_id(request_id)
+            # Loading is observable in snapshots but is not itself a user
+            # command, so it does not consume an optimistic-concurrency
+            # version.  A completed load remains the single version advance
+            # promised by the original HTTP contract.
+            loading = case.model_copy(update={"status": "loading"})
+            self.repository.update_case(loading, expected_version)
+            self._append(case_id, "script.loading", request_id, script_id=script_id, version=loading.version, epoch=loading.epoch)
             cards: list[MemoryCard] = []
-            for seed in SCENARIOS[script_id]:
-                card = self.gateway.write_private(case_id, seed.agent_id, seed.content, topic=seed.topic, kind=seed.kind, created_by="script")
-                cards.append(card)
-                self._append(case_id, "memory.created", request_id, card=self._card_event_payload(card), created_by="script")
-            updated = self._advance(case, expected_version, script_id=script_id, status="ready")
-            self._append(case_id, "script.loaded", request_id, script_id=script_id, version=updated.version, card_ids=[card.id for card in cards])
+            try:
+                counts: dict[AgentId, int] = {}
+                for seed in SCENARIOS[script_id]:
+                    counts[seed.agent_id] = counts.get(seed.agent_id, 0) + 1
+                for agent_id, required in counts.items():
+                    self._ensure_space_capacity(case_id, agent_id, required)
+                for seed in SCENARIOS[script_id]:
+                    card = self.gateway.write_private(case_id, seed.agent_id, seed.content, topic=seed.topic, kind=seed.kind, created_by="script")
+                    cards.append(card)
+                    self._append(case_id, "memory.created", request_id, card=self._card_event_payload(card), created_by="script", epoch=loading.epoch)
+            except Exception as exc:
+                cleanup_failed = False
+                for card in reversed(cards):
+                    try:
+                        self.gateway.delete_card(case_id, card)
+                    except Exception:
+                        cleanup_failed = True
+                        self.repository.add_cleanup_task(case_id, card.id, card.owner_agent_id.value)
+                recovered = loading.model_copy(update={"script_id": None, "status": "empty"})
+                self.repository.update_case(recovered, loading.version)
+                self._append(case_id, "script.load_failed", request_id, version=recovered.version, epoch=recovered.epoch, failure_type=type(exc).__name__, cleanup_pending=cleanup_failed)
+                raise ScriptLoadError("剧本加载未完成，已回滚已写入的演示数据。") from exc
+            updated = self._advance(loading, loading.version, script_id=script_id, status="ready")
+            self._append(case_id, "script.loaded", request_id, script_id=script_id, version=updated.version, epoch=updated.epoch, card_ids=[card.id for card in cards])
             return self.snapshot(case_id)
 
     def reset_case(self, case_id: str, expected_version: int, request_id: str | None = None) -> CaseSnapshot:
@@ -182,32 +243,56 @@ class BureauService:
         with self._command_lock:
             case = self.repository.get_case(case_id)
             self._require_version(case, expected_version)
-            for agent_id in (*ROLE_IDS, AgentId.BULLETIN_BOARD):
-                for card in self.gateway.list_space(case_id, agent_id):
+            request_id = self._request_id(request_id)
+            resetting = case
+            if case.status != "resetting":
+                # Like script loading, the transient state does not change
+                # the public command version; the completed reset advances it
+                # exactly once.
+                resetting = case.model_copy(update={"status": "resetting"})
+                self.repository.update_case(resetting, expected_version)
+                self._append(case_id, "case.resetting", request_id, version=resetting.version, epoch=resetting.epoch)
+                for agent_id in (*ROLE_IDS, AgentId.BULLETIN_BOARD):
+                    for card in self.gateway.list_space(case_id, agent_id):
+                        self.repository.add_cleanup_task(case_id, card.id, agent_id.value)
+            for task in self.repository.pending_cleanup(case_id):
+                agent_id = AgentId(str(task["agent_id"]))
+                card = self.gateway.get_private(case_id, agent_id, str(task["memory_id"]))
+                if card is None:
+                    self.repository.complete_cleanup_task(case_id, str(task["memory_id"]))
+                    continue
+                try:
                     self.gateway.delete_card(case_id, card)
-            updated = case.model_copy(update={"version": case.version + 1, "script_id": None, "status": "empty"})
-            self.repository.update_case(updated, expected_version)
+                except Exception:
+                    self.repository.fail_cleanup_task(case_id, card.id)
+                else:
+                    self.repository.complete_cleanup_task(case_id, card.id)
+            if self.repository.pending_cleanup(case_id):
+                self._append(case_id, "case.cleanup_pending", request_id, version=resetting.version, epoch=resetting.epoch)
+                raise CleanupPendingError("远端记忆清理尚未完成；案件保持重置中状态，可使用当前版本重试。")
+            updated = self._advance(resetting, resetting.version, script_id=None, status="empty", epoch=resetting.epoch + 1)
+            self.repository.clear_completed_cleanup(case_id)
             self._last_answers.pop(case_id, None)
-            for key in [key for key in self._whisper_timestamps if key[0] == case_id]:
-                self._whisper_timestamps.pop(key, None)
-            resolved_request_id = self._request_id(request_id)
-            self._append(case_id, "case.reset", resolved_request_id, version=updated.version, status=updated.status)
+            self._append(case_id, "case.reset", request_id, version=updated.version, status=updated.status, epoch=updated.epoch)
             return self.snapshot(case_id)
 
-    def whisper(self, case_id: str, agent_id: AgentId, text: str, expected_version: int, request_id: str | None = None) -> tuple[MemoryCard, CaseSnapshot]:
+    def whisper(self, case_id: str, agent_id: AgentId, text: str, expected_version: int, request_id: str | None = None, caller_id: str | None = None) -> tuple[MemoryCard, CaseSnapshot]:
         if not self.settings.demo_allow_freeform_whisper:
             raise FreeformDisabledError("freeform whispers are disabled")
         if agent_id not in ROLE_IDS:
             raise AccessViolationError("only roles have private memory spaces")
         with self._command_lock:
             self._validate_demo_whisper(text)
-            self._consume_whisper_quota(case_id, agent_id)
+            self._consume_whisper_quota(case_id, agent_id, caller_id)
             case = self.repository.get_case(case_id)
             self._require_version(case, expected_version)
+            if case.status not in {"empty", "ready"}:
+                raise ScriptConflictError("案件尚未处于可写入状态。")
+            self._ensure_space_capacity(case_id, agent_id)
             request_id = self._request_id(request_id)
             card = self.gateway.write_private(case_id, agent_id, text, topic="operator_whisper", kind="evidence", created_by="operator")
             updated = self._advance(case, expected_version)
-            self._append(case_id, "memory.created", request_id, card=self._card_event_payload(card), created_by="operator", version=updated.version)
+            self._append(case_id, "memory.created", request_id, card=self._card_event_payload(card), created_by="operator", version=updated.version, epoch=updated.epoch)
             return card, self.snapshot(case_id)
 
     def _validate_demo_whisper(self, text: str) -> None:
@@ -217,30 +302,33 @@ class BureauService:
         logs. Operators can extend the baseline terms only through ``.env``.
         """
         compact = re.sub(r"[\s-]+", "", text)
-        phone = re.compile(r"(?<!\d)(?:\+?86)?1[3-9]\d{9}(?!\d)")
+        phone = re.compile(r"(?<!\d)(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{2,4}\)?[ .-]?){2,4}\d{3,4}(?!\d)")
         mainland_id = re.compile(r"(?<!\d)\d{17}[\dXx](?![\dA-Za-z])")
-        if phone.search(compact) or mainland_id.search(compact):
+        email = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+        payment_card = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+        address_signal = re.compile(r"(?:省|市|区|县|路|街|巷|号|室).{0,24}(?:号|室|栋|单元)")
+        injection = re.compile(r"(?:ignore\s+(?:all\s+)?previous|system\s+prompt|忽略.{0,12}(?:规则|指令)|泄露.{0,12}(?:提示词|系统))", re.IGNORECASE)
+        if phone.search(compact) or mainland_id.search(compact) or email.search(text) or payment_card.search(compact) or address_signal.search(text) or injection.search(text):
             raise UnsafeWhisperError("freeform demo input cannot contain personal contact or identity numbers")
         if any(term.casefold() in text.casefold() for term in self.settings.disallowed_whisper_terms):
             raise UnsafeWhisperError("freeform demo input contains a disallowed sensitive-data term")
 
-    def _consume_whisper_quota(self, case_id: str, agent_id: AgentId) -> None:
+    def _consume_whisper_quota(self, case_id: str, agent_id: AgentId, caller_id: str | None = None) -> None:
         limit = self.settings.demo_whisper_rate_limit_per_minute
         if limit == 0:
             return
-        now = time.monotonic()
-        key = (case_id, agent_id)
-        current = [timestamp for timestamp in self._whisper_timestamps.get(key, []) if now - timestamp < 60]
-        if len(current) >= limit:
+        epoch = self.repository.get_case(case_id).epoch
+        principal = caller_id or f"case:{case_id}:epoch:{epoch}:role:{agent_id.value}"
+        if not self.repository.consume_rate_limit(f"whisper:{agent_id.value}", principal, limit):
             raise WhisperRateLimitError("freeform whisper rate limit exceeded")
-        current.append(now)
-        self._whisper_timestamps[key] = current
 
     def ask(self, case_id: str, agent_id: AgentId, question: str, expected_version: int, request_id: str | None = None) -> AnswerView:
         if agent_id not in ROLE_IDS:
             raise AccessViolationError("bulletin_board cannot be interrogated")
         case = self.repository.get_case(case_id)
         self._require_version(case, expected_version)
+        if case.status != "ready":
+            raise ScriptConflictError("案件尚未处于可检索状态。")
         request_id = self._request_id(request_id)
         started = time.perf_counter()
         private_cards = self.gateway.search_space(case_id, agent_id, question)
@@ -263,7 +351,13 @@ class BureauService:
             duration_ms=trace.duration_ms,
             mode=trace.mode,
         )
-        result = self.answers.answer(agent_id, question, cards)
+        contains_freeform = any(card.topic == "operator_whisper" for card in cards)
+        if self.settings.llm_is_configured and cards and not contains_freeform and not self.repository.consume_rate_limit("llm_daily", "deployment", self.settings.demo_llm_daily_request_budget, window_seconds=86400):
+            raise LlmBudgetError("今日模型调用预算已耗尽；系统已保留本地证据且未发送新的模型请求。")
+        # An approved external model only receives reviewed scripted/public
+        # material.  When an explicit local free-form demo is active, retain
+        # deterministic evidence mode for any retrieval containing that input.
+        result = self.answers.deterministic(cards) if contains_freeform else self.answers.answer(agent_id, question, cards)
         answer = AnswerView(answer=result.answer, certainty=result.certainty, evidence_ids=result.evidence_ids, trace=trace, responder=result.responder, fallback_reason=result.fallback_reason)
         if result.fallback_reason:
             self._append(case_id, "agent.fallback", request_id, reason=result.fallback_reason)
@@ -286,12 +380,13 @@ class BureauService:
         with self._command_lock:
             case = self.repository.get_case(case_id)
             existing = self.repository.find_publication(case_id, memory_id)
-            if existing:
-                existing_id = str(existing["public_card"]["card_id"])
-                public = self.gateway.get_private(case_id, AgentId.BULLETIN_BOARD, existing_id)
+            if existing and existing.get("status") == "ready" and isinstance(existing.get("public_card_id"), str):
+                public = self.gateway.get_private(case_id, AgentId.BULLETIN_BOARD, str(existing["public_card_id"]))
                 if public:
                     return public, True, self.snapshot(case_id)
             self._require_version(case, expected_version)
+            if case.status != "ready":
+                raise ScriptConflictError("案件尚未处于可发布状态。")
             source = self.gateway.get_private(case_id, source_agent_id, memory_id)
             if not source:
                 # A card from another case fails here because every gateway request includes case:{id}.
@@ -299,10 +394,65 @@ class BureauService:
             if source.visibility.value != "private":
                 raise AccessViolationError("only private source cards may be published")
             request_id = self._request_id(request_id)
+            reservation, claimed = self.repository.begin_publication(case_id, source.id)
+            if not claimed:
+                existing_id = reservation.get("public_card_id")
+                if reservation.get("status") == "ready" and isinstance(existing_id, str):
+                    public = self.gateway.get_private(case_id, AgentId.BULLETIN_BOARD, existing_id)
+                    if public:
+                        return public, True, self.snapshot(case_id)
+                # A process can die after the remote write but before its
+                # SQLite completion. Reconcile that small saga window from
+                # immutable source provenance before allowing a retry.
+                recovered = next(
+                    (card for card in self.gateway.list_space(case_id, AgentId.BULLETIN_BOARD) if card.source_memory_id == source.id),
+                    None,
+                )
+                if recovered:
+                    self.repository.complete_publication(case_id, source.id, recovered.id)
+                    return recovered, True, self.snapshot(case_id)
+                if reservation.get("status") == "pending":
+                    # A live owner may be between its remote write and local
+                    # completion. Wait briefly for that bounded saga rather
+                    # than deleting its durable reservation and creating a
+                    # second public copy.
+                    for _ in range(20):
+                        time.sleep(0.05)
+                        current = self.repository.find_publication(case_id, source.id)
+                        current_id = current.get("public_card_id") if current else None
+                        if current and current.get("status") == "ready" and isinstance(current_id, str):
+                            public = self.gateway.get_private(case_id, AgentId.BULLETIN_BOARD, current_id)
+                            if public:
+                                return public, True, self.snapshot(case_id)
+                        recovered = next(
+                            (card for card in self.gateway.list_space(case_id, AgentId.BULLETIN_BOARD) if card.source_memory_id == source.id),
+                            None,
+                        )
+                        if recovered:
+                            self.repository.complete_publication(case_id, source.id, recovered.id)
+                            return recovered, True, self.snapshot(case_id)
+                raise PublicationPendingError("该卡片正在由另一请求发布；请稍后刷新案件。")
+            try:
+                self._ensure_space_capacity(case_id, AgentId.BULLETIN_BOARD)
+            except Exception:
+                self.repository.abandon_publication(case_id, source.id)
+                raise
             self._append(case_id, "memory.publishing", request_id, source_memory_id=source.id, source_agent_id=source_agent_id.value)
-            public = self.gateway.write_public(case_id, source)
-            updated = self._advance(case, expected_version)
-            self._append(case_id, "memory.published", request_id, source_memory_id=source.id, source_agent_id=source_agent_id.value, public_card=self._card_event_payload(public), version=updated.version)
+            public: MemoryCard | None = None
+            try:
+                public = self.gateway.write_public(case_id, source)
+                self.repository.complete_publication(case_id, source.id, public.id)
+                updated = self._advance(case, expected_version)
+            except Exception:
+                if public is not None:
+                    try:
+                        self.gateway.delete_card(case_id, public)
+                    except Exception:
+                        self.repository.add_cleanup_task(case_id, public.id, AgentId.BULLETIN_BOARD.value)
+                self.repository.abandon_publication(case_id, source.id)
+                raise
+            assert public is not None
+            self._append(case_id, "memory.published", request_id, source_memory_id=source.id, source_agent_id=source_agent_id.value, public_card=self._card_event_payload(public), version=updated.version, epoch=updated.epoch)
             return public, False, self.snapshot(case_id)
 
     def snapshot(self, case_id: str) -> CaseSnapshot:
@@ -365,9 +515,9 @@ class BureauService:
         for event in self.events_after(case_id, after_event_id):
             payload = event.payload
             safe_payload: dict[str, Any]
-            if event.type in {"case.created", "case.reset"}:
-                safe_payload = {key: payload[key] for key in ("version", "status") if key in payload}
-            elif event.type == "script.loaded":
+            if event.type in {"case.created", "case.reset", "case.resetting"}:
+                safe_payload = {key: payload[key] for key in ("version", "status", "epoch") if key in payload}
+            elif event.type in {"script.loading", "script.loaded", "script.load_failed"}:
                 safe_payload = {key: payload[key] for key in ("script_id", "version") if key in payload}
             elif event.type == "memory.created":
                 # It reports activity, not the private card identifier or topic.
@@ -386,7 +536,7 @@ class BureauService:
                                 safe_payload["public_card"] = self._public_card(card).model_dump(mode="json")
                     except (AccessViolationError, ValueError):
                         pass
-            elif event.type in {"memory.publishing", "retrieval.completed", "answer.completed", "agent.fallback"}:
+            elif event.type in {"memory.publishing", "retrieval.completed", "answer.completed", "agent.fallback", "case.cleanup_pending"}:
                 safe_payload = {"completed": True}
             else:
                 # New event types must opt in to a projection; an empty payload
@@ -415,7 +565,7 @@ class BureauService:
     def audit_timeline(self, case_id: str) -> AuditTimeline:
         if not (self.settings.demo_advanced_features_enabled and self.settings.demo_audit_timeline_enabled):
             raise AdvancedFeatureDisabledError("the public audit timeline is disabled")
-        self.repository.get_case(case_id)
+        case = self.repository.get_case(case_id)
         entries: list[AuditEntry] = []
         # Read only publication ledger events. Do not list or search any
         # private memory space merely to assemble a timeline.
@@ -440,6 +590,8 @@ class BureauService:
                 source_agent_id=source_agent,
                 source_memory_id=source_memory_id,
                 public_card_id=public_card_id,
+                epoch=int(payload.get("epoch", 0)),
+                is_current=int(payload.get("epoch", 0)) == case.epoch,
             ))
         return AuditTimeline(case_id=case_id, entries=entries)
 
@@ -486,13 +638,51 @@ class BureauService:
     def clear_ephemeral_data(self) -> None:
         """Delete every current case from PowerMem before erasing the local ledger."""
         with self._command_lock:
+            failures: list[str] = []
             for case_id in self.repository.case_ids():
                 for agent_id in (*ROLE_IDS, AgentId.BULLETIN_BOARD):
                     for card in self.gateway.list_space(case_id, agent_id):
-                        self.gateway.delete_card(case_id, card)
+                        self.repository.add_cleanup_task(case_id, card.id, agent_id.value)
+                        try:
+                            self.gateway.delete_card(case_id, card)
+                        except Exception:
+                            self.repository.fail_cleanup_task(case_id, card.id)
+                            failures.append(card.id)
+                        else:
+                            self.repository.complete_cleanup_task(case_id, card.id)
+            if failures:
+                raise CleanupPendingError("临时数据远端清理未完成；本地账本已保留以便重试。")
             self.repository.clear_all()
             self._last_answers.clear()
-            self._whisper_timestamps.clear()
+
+    def enforce_retention(self) -> None:
+        """Delete expired persistent cases with the same remote-first rule.
+
+        Failed remote deletions intentionally leave the case and retry evidence
+        intact; the next startup or explicit reset can resume safely.
+        """
+        if self.settings.demo_data_retention != "persistent":
+            return
+        cutoff = now_utc() - timedelta(days=self.settings.demo_persistent_retention_days)
+        with self._command_lock:
+            for case_id in self.repository.case_ids():
+                case = self.repository.get_case(case_id)
+                if case.created_at > cutoff:
+                    continue
+                failed = False
+                for agent_id in (*ROLE_IDS, AgentId.BULLETIN_BOARD):
+                    for card in self.gateway.list_space(case_id, agent_id):
+                        self.repository.add_cleanup_task(case_id, card.id, agent_id.value)
+                        try:
+                            self.gateway.delete_card(case_id, card)
+                        except Exception:
+                            failed = True
+                            self.repository.fail_cleanup_task(case_id, card.id)
+                        else:
+                            self.repository.complete_cleanup_task(case_id, card.id)
+                if not failed and not self.repository.pending_cleanup(case_id):
+                    self._logger.info("retention.case_deleted", extra={"case_id": case_id, "mode": self.settings.demo_mode})
+                    self.repository.delete_case(case_id)
 
     def metrics(self) -> dict[str, int]:
-        return self.repository.aggregate_metrics()
+        return {**self.repository.aggregate_metrics(), **self.repository.operational_metrics()}

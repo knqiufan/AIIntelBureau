@@ -30,10 +30,10 @@ class FakeMemory:
         assert limit == 20
         return list(self.cards)
 
-    def get_all(self, *, user_id, agent_id, limit):
+    def get_all(self, *, user_id, agent_id, limit, offset=0):
         assert user_id == "case:sdk-case"
         assert agent_id == self.agent_id
-        return list(self.cards[:limit])
+        return list(self.cards[offset:offset + limit])
 
     def delete(self, memory_id, *, user_id, agent_id):
         assert user_id == "case:sdk-case"
@@ -63,8 +63,9 @@ def test_direct_sdk_gateway_uses_oceanbase_mysql_compatible_config_and_scope(mon
         seekdb_user="root@tenant#cluster",
         seekdb_password="test-password",
         seekdb_database="ai_intel_bureau",
-        embedding_api_key="embedding-test-key",
-        embedding_model="step-embedding-test",
+            embedding_api_key="embedding-test-key",
+            embedding_model="step-embedding-test",
+            demo_external_data_egress_approved=True,
     )
     gateway = PowerMemSdkGateway(settings)
 
@@ -98,8 +99,9 @@ def test_direct_oceanbase_configuration_parses_in_the_powermem_sdk_schema():
         seekdb_user="root@tenant#cluster",
         seekdb_password="test-password",
         seekdb_database="ai_intel_bureau",
-        embedding_api_key="embedding-test-key",
-        embedding_model="step-embedding-test",
+            embedding_api_key="embedding-test-key",
+            embedding_model="step-embedding-test",
+            demo_external_data_egress_approved=True,
     )
 
     parsed = MemoryConfig(**settings.powermem_config())
@@ -157,6 +159,7 @@ def test_direct_sdk_gateway_uses_empty_host_for_embedded_seekdb(monkeypatch):
         seekdb_path="./tmp/seekdb",
         embedding_api_key="embedding-test-key",
         embedding_model="step-embedding-test",
+        demo_external_data_egress_approved=True,
     )
     gateway = PowerMemSdkGateway(settings)
 

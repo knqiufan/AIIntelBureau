@@ -88,7 +88,7 @@ def test_deepagents_role_responder_is_tool_free_and_returns_grounded_evidence():
 def test_answer_service_uses_grounded_deepagents_result_in_full_mode():
     model = LocalEvidenceModel()
     responder = DeepAgentsRoleResponder(Settings(_env_file=None), model_factory=lambda: model)
-    service = AnswerService(Settings(_env_file=None, demo_mode="full", llm_api_key="test-key"), role_responder=responder)
+    service = AnswerService(Settings(_env_file=None, demo_mode="full", llm_api_key="test-key", demo_external_data_egress_approved=True), role_responder=responder)
 
     answer = service.answer(AgentId.INFORMANT, "密码是多少？", [evidence_card()])
 
@@ -99,7 +99,7 @@ def test_answer_service_uses_grounded_deepagents_result_in_full_mode():
 def test_answer_service_returns_plain_text_provider_content_to_the_client():
     model = PlainTextEvidenceModel()
     responder = DeepAgentsRoleResponder(Settings(_env_file=None), model_factory=lambda: model)
-    service = AnswerService(Settings(_env_file=None, demo_mode="full", llm_api_key="test-key"), role_responder=responder)
+    service = AnswerService(Settings(_env_file=None, demo_mode="full", llm_api_key="test-key", demo_external_data_egress_approved=True), role_responder=responder)
 
     answer = service.answer(AgentId.INFORMANT, "What is the password?", [evidence_card()])
 

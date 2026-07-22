@@ -30,3 +30,7 @@ python -m app.clear_demo_data --confirm
 生产环境必须通过受控 HTTPS 反向代理访问，并使用：`DEMO_ENV=production`、不同的局长/大屏口令、`DEMO_ACCESS_COOKIE_SECURE=true`、`DEMO_TRUSTED_HTTPS_PROXY=true` 和仅含明确 HTTPS 来源的 `DEMO_CORS_ORIGINS`。任一项不满足时应用会在启动前失败，且不会打印口令。
 
 使用 `docker compose --profile production up --build`；不要在生产机运行 development profile。生产 profile 不映射 API 宿主机端口，只有 Nginx 对外服务。
+
+入口必须在 TLS 终止层设置 HSTS（确认整个域名只提供 HTTPS 后才启用），并将流量只转发给 Compose 的 web 服务。不要把 API 的 `/metrics` 路由给浏览器；由内网 Prometheus 抓取并依据 [可观测性、SLO 与告警](./observability.md) 配置告警。
+
+发布、回滚和 SQLite/远端记忆恢复的顺序见 [备份、恢复与发布](./backup-and-release.md)。

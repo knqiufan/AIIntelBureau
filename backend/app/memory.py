@@ -175,7 +175,34 @@ class PowerMemSdkGateway:
         return [card_from_result(item, owner=agent_id) for item in _result_items(self._memory(agent_id).search(query, user_id=to_user_id(case_id), agent_id=agent_id.value, limit=20))]
 
     def list_space(self, case_id: str, agent_id: AgentId) -> list[MemoryCard]:
-        return [card_from_result(item, owner=agent_id) for item in _result_items(self._memory(agent_id).get_all(user_id=to_user_id(case_id), agent_id=agent_id.value, limit=100))]
+        """Read every card using the SDK's explicit offset pagination.
+
+        Never use a capped first page as an authorization, publication, or
+        cleanup source.  The application quota keeps active demo spaces below
+        100 cards, but this loop also makes legacy/administrative cleanup
+        complete when a space pre-dates that boundary.
+        """
+        raw_cards: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = _result_items(self._memory(agent_id).get_all(
+                user_id=to_user_id(case_id), agent_id=agent_id.value,
+                limit=self.settings.demo_memory_page_size, offset=offset,
+            ))
+            raw_cards.extend(page)
+            if len(page) < self.settings.demo_memory_page_size:
+                break
+            offset += len(page)
+        # A provider retry can overlap pages; preserve the first result and
+        # avoid duplicated cards in snapshots or deletion compensation.
+        seen: set[str] = set()
+        cards: list[MemoryCard] = []
+        for item in raw_cards:
+            card = card_from_result(item, owner=agent_id)
+            if card.id not in seen:
+                seen.add(card.id)
+                cards.append(card)
+        return cards
 
     def get_private(self, case_id: str, agent_id: AgentId, memory_id: str) -> MemoryCard | None:
         return next((card for card in self.list_space(case_id, agent_id) if card.id == memory_id), None)

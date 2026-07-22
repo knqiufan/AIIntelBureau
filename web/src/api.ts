@@ -38,25 +38,53 @@ export interface ApiClient {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let activityKey = "";
+let csrfTokenValue = "";
 
 function endpoint(path: string): string {
   return `${API_BASE}${path}`;
+}
+
+function csrfToken(): string {
+  if (csrfTokenValue) return csrfTokenValue;
+  const name = window.location.pathname.startsWith("/stage/") ? "ai_intel_bureau_stage_csrf" : "ai_intel_bureau_operator_csrf";
+  const entry = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  return entry ? decodeURIComponent(entry.slice(name.length + 1)) : "";
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(endpoint(path), {
     ...init,
     credentials: init?.credentials ?? "include",
-    headers: { "Content-Type": "application/json", ...(activityKey ? { "X-Demo-Access-Key": activityKey } : {}), ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(activityKey ? { "X-Demo-Access-Key": activityKey } : {}),
+      ...(init?.method && init.method !== "GET" && init.method !== "HEAD" && csrfToken() ? { "X-CSRF-Token": csrfToken() } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new ApiError(response.status, payload?.detail?.code, payload?.detail?.message ?? "操作未完成，请重试。");
   }
+  if (path === "/api/session") csrfTokenValue = response.headers.get("X-CSRF-Token") ?? "";
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
 
 const eventTypes = ["case.created", "case.reset", "script.loaded", "memory.created", "retrieval.completed", "answer.completed", "agent.fallback", "memory.publishing", "memory.published"];
+
+function cursorStorageKey(scope: "operator" | "stage", caseId: string): string {
+  return `ai-intel-bureau:sse:${scope}:${caseId}`;
+}
+
+function storedCursor(scope: "operator" | "stage", caseId: string): number {
+  const parsed = Number(sessionStorage.getItem(cursorStorageKey(scope, caseId)) ?? "0");
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function rememberCursor(scope: "operator" | "stage", caseId: string, event: Event): void {
+  const value = Number((event as MessageEvent<string>).lastEventId);
+  if (Number.isSafeInteger(value) && value > 0) sessionStorage.setItem(cursorStorageKey(scope, caseId), String(value));
+}
 
 const httpApi: ApiClient = {
   isMock: false,
@@ -93,8 +121,9 @@ const httpApi: ApiClient = {
   closeUnsafeFixture: (fixtureId: string) => request<void>(`/api/advanced/unsafe-fixture/${fixtureId}`, { method: "DELETE" }),
   eventUrl: (caseId: string, afterId = 0) => endpoint(`/api/cases/${caseId}/operator-events?after_event_id=${afterId}`),
   subscribeEvents: (caseId, onEvent, onStatus) => {
-    const source = new EventSource(httpApi.eventUrl(caseId), { withCredentials: true });
+    const source = new EventSource(httpApi.eventUrl(caseId, storedCursor("operator", caseId)), { withCredentials: true });
     const update = (event: Event) => {
+      rememberCursor("operator", caseId, event);
       try { onEvent(JSON.parse((event as MessageEvent<string>).data) as GameEvent); } catch { /* Snapshot refresh remains available. */ }
     };
     eventTypes.forEach((eventType) => source.addEventListener(eventType, update));
@@ -103,8 +132,9 @@ const httpApi: ApiClient = {
     return () => source.close();
   },
   subscribeStageEvents: (caseId, onEvent, onStatus) => {
-    const source = new EventSource(endpoint(`/api/cases/${caseId}/stage-events?after_event_id=0`), { withCredentials: true });
+    const source = new EventSource(endpoint(`/api/cases/${caseId}/stage-events?after_event_id=${storedCursor("stage", caseId)}`), { withCredentials: true });
     const update = (event: Event) => {
+      rememberCursor("stage", caseId, event);
       try { onEvent(JSON.parse((event as MessageEvent<string>).data) as GameEvent); } catch { /* Snapshot refresh remains available. */ }
     };
     eventTypes.forEach((eventType) => source.addEventListener(eventType, update));
