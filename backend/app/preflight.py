@@ -32,7 +32,20 @@ def configuration_checks(settings: Settings) -> list[Check]:
     checks.append(Check("embedding", True, settings.embedding_is_configured, "configured" if settings.embedding_is_configured else "set EMBEDDING_API_KEY and EMBEDDING_MODEL"))
     protocol_ok = settings.embedding_provider in {"openai", "siliconflow"} and bool(settings.embedding_base_url.strip())
     checks.append(Check("embedding_protocol", False, protocol_ok, "OpenAI-compatible endpoint configured" if protocol_ok else "configure EMBEDDING_PROVIDER and EMBEDDING_BASE_URL"))
-    checks.append(Check("activity_access_cookie", False, not settings.demo_access_key.strip() or settings.demo_access_cookie_secure, "not enabled or secure-cookie mode enabled" if not settings.demo_access_key.strip() or settings.demo_access_cookie_secure else "set DEMO_ACCESS_COOKIE_SECURE=true behind HTTPS"))
+    role_keys_configured = bool(settings.demo_operator_access_key.strip()) and bool(settings.demo_stage_access_key.strip())
+    production = settings.demo_env == "production"
+    checks.append(Check(
+        "role_access_keys",
+        production,
+        role_keys_configured,
+        "configured" if role_keys_configured else "set distinct DEMO_OPERATOR_ACCESS_KEY and DEMO_STAGE_ACCESS_KEY",
+    ))
+    checks.append(Check(
+        "activity_access_cookie",
+        production,
+        (not role_keys_configured or settings.demo_access_cookie_secure),
+        "not enabled or secure-cookie mode enabled" if not role_keys_configured or settings.demo_access_cookie_secure else "set DEMO_ACCESS_COOKIE_SECURE=true behind HTTPS",
+    ))
     return checks
 
 

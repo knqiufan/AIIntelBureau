@@ -1,14 +1,19 @@
 services:
+  # Production: the API is reachable only on the internal Compose network.
+  # The web proxy is the sole externally published service.
   api:
+    profiles: ["production"]
     build:
       context: .
       dockerfile: backend/Dockerfile
     env_file: .env
+    environment:
+      DEMO_ENV: production
     restart: unless-stopped
     volumes:
       - ai_intel_bureau_data:/app/data
-    ports:
-      - "${DEMO_API_PUBLIC_PORT:-8000}:8000"
+    expose:
+      - "8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]
       interval: 15s
@@ -23,9 +28,11 @@ services:
         limits: { cpus: "2.0", memory: 2G }
 
   web:
+    profiles: ["production"]
     build:
       context: .
       dockerfile: web/Dockerfile
+      args: { NGINX_CONFIG: nginx.conf }
     restart: unless-stopped
     depends_on:
       api:
@@ -41,5 +48,52 @@ services:
       driver: local
       options: { max-size: "10m", max-file: "3" }
 
+  # Development is deliberately a separate profile.  Its API is loopback-only
+  # so it cannot accidentally bypass the production proxy from the network.
+  api-dev:
+    profiles: ["development"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    environment:
+      DEMO_ENV: development
+    restart: unless-stopped
+    volumes:
+      - ai_intel_bureau_dev_data:/app/data
+    ports:
+      - "127.0.0.1:${DEMO_API_PUBLIC_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: local
+      options: { max-size: "10m", max-file: "3" }
+
+  web-dev:
+    profiles: ["development"]
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args: { NGINX_CONFIG: nginx.development.conf }
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${DEMO_WEB_PUBLIC_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: local
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   ai_intel_bureau_data:
+  ai_intel_bureau_dev_data:

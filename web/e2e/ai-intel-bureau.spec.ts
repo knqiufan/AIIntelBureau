@@ -86,5 +86,5 @@ test("stage is read-only and can recover the same case snapshot", async ({ page,
   await expect(stage.getByText("私有记忆默认隔离；共享必须显式发生")).toBeVisible();
   await expect(stage.getByRole("button", { name: "新开案件" })).toHaveCount(0);
   await page.getByRole("button", { name: "问侦探密码" }).click();
-  await expect(stage.getByText("未命中可见记忆")).toBeVisible({ timeout: 5000 });
+  await expect(stage.getByRole("heading", { name: "本次操作没有命中已公开情报" })).toBeVisible({ timeout: 5000 });
 });

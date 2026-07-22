@@ -10,7 +10,10 @@ export default defineConfig(({ mode }) => {
     envDir,
     server: {
       port: 5173,
-      proxy: { "/api": { target: env.DEMO_API_URL || "http://127.0.0.1:8000", changeOrigin: true } },
+      // Playwright supplies an isolated backend via process.env.  Prefer it
+      // over a developer's checked-in local .env target so tests never attach
+      // to an already-running service.
+      proxy: { "/api": { target: process.env.DEMO_API_URL || env.DEMO_API_URL || "http://127.0.0.1:8000", changeOrigin: true } },
     },
     test: { exclude: ["e2e/**", "node_modules/**", "dist/**"] },
   };

@@ -1,7 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode, useEffect, useState } from "react";
 import { ApiError, api } from "../api";
 import { applyGuideEvent, emptyGuideState, type GameEvent, type GuideState } from "../lib/guide";
-import type { AdvancedFeatures, Health, Snapshot } from "../types";
+import type { AdvancedFeatures, Health, Snapshot, StageSnapshot } from "../types";
 import { AccessGate } from "./components/AccessGate";
 import { OperateView } from "./components/OperateView";
 import { StageView } from "./components/StageView";
@@ -43,7 +43,11 @@ function BureauApp(): JSX.Element {
   const path = window.location.pathname;
   const isStage = path.startsWith("/stage/");
   const pathCaseId = path.match(/\/(?:operate|stage)\/([^/]+)/)?.[1] ?? null;
-  const [caseId, setCaseId] = useState<string | null>(pathCaseId);
+  return isStage ? <StageApp caseId={pathCaseId} /> : <OperatorApp initialCaseId={pathCaseId} />;
+}
+
+function OperatorApp({ initialCaseId }: { initialCaseId: string | null }): JSX.Element {
+  const [caseId, setCaseId] = useState<string | null>(initialCaseId);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +140,7 @@ function BureauApp(): JSX.Element {
   const startNewCase = () =>
     run("new-case", async () => {
       const created = await api.createCase();
-      window.location.assign(isStage ? `/stage/${created.case.case_id}` : `/operate/${created.case.case_id}`);
+      window.location.assign(`/operate/${created.case.case_id}`);
     });
 
   const resetCurrentCase = () =>
@@ -179,9 +183,7 @@ function BureauApp(): JSX.Element {
     );
   }
 
-  return isStage ? (
-    <StageView snapshot={snapshot} health={health} />
-  ) : (
+  return (
     <OperateView
       snapshot={snapshot}
       health={health}
@@ -196,4 +198,83 @@ function BureauApp(): JSX.Element {
       onReset={resetCurrentCase}
     />
   );
+}
+
+function StageApp({ caseId }: { caseId: string | null }): JSX.Element {
+  const [snapshot, setSnapshot] = useState<StageSnapshot | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [accessRequired, setAccessRequired] = useState(false);
+  const [authRevision, setAuthRevision] = useState(0);
+
+  const refreshSnapshot = async () => {
+    if (!caseId) return;
+    setSnapshot(await api.stageSnapshot(caseId));
+  };
+
+  useEffect(() => {
+    if (!caseId) {
+      setError("大屏地址缺少案件编号。");
+      return;
+    }
+    void refreshSnapshot().catch((caught) => {
+      if (caught instanceof ApiError && (caught.code === "ACCESS_KEY_REQUIRED" || caught.code === "ROLE_FORBIDDEN")) setAccessRequired(true);
+      setError(caught instanceof Error ? caught.message : "无法读取大屏快照。");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseId, authRevision]);
+
+  useEffect(() => {
+    const poll = async () => {
+      try { setHealth(await api.health()); } catch { /* health will retry */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 10000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!caseId || !snapshot) return;
+    return api.subscribeStageEvents(
+      caseId,
+      () => { void refreshSnapshot().catch(() => undefined); },
+      (status) => {
+        if (status === "error") setError((current) => current ?? "实时同步暂时断开；正在自动重连。");
+        else setError((current) => (current?.startsWith("实时同步") ? null : current));
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseId, snapshot?.case.case_id]);
+
+  if (accessRequired) {
+    return (
+      <AccessGate
+        role="stage"
+        error={error}
+        onSubmit={async (key) => {
+          api.setActivityKey(key);
+          try {
+            await api.establishActivitySession();
+            setError(null);
+            setAccessRequired(false);
+            setAuthRevision((value) => value + 1);
+          } catch (caught) {
+            setAccessRequired(true);
+            setError(caught instanceof Error ? caught.message : "大屏口令验证失败。");
+          }
+        }}
+      />
+    );
+  }
+
+  if (!snapshot) {
+    return (
+      <main className="loading-screen">
+        <div className="boot-loader" aria-hidden="true"><i className="scan-sweep" /><i className="scan-pulse" /><i className="scan-core" /></div>
+        <p>正在连接只读大屏…</p>
+        {error && <p className="error-banner">{error}</p>}
+      </main>
+    );
+  }
+  return <StageView snapshot={snapshot} health={health} />;
 }

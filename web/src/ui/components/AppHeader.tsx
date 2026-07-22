@@ -8,7 +8,7 @@ export function AppHeader({
   onNewCase,
   onReset,
 }: {
-  snapshot: Snapshot;
+  snapshot: Pick<Snapshot, "case">;
   health: Health | null;
   stage?: boolean;
   onNewCase?: () => void;

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hmac
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,12 +28,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    demo_env: Literal["development", "production"] = "development"
     demo_mode: Literal["full", "degrade"] = "degrade"
     demo_allow_freeform_whisper: bool = True
     demo_disallowed_whisper_terms: str = "身份证,手机号,银行卡号,真实住址"
     demo_whisper_rate_limit_per_minute: int = Field(default=6, ge=0, le=120)
-    demo_access_key: str = ""
+    # Separate credentials create distinct server-side principals.  The old
+    # DEMO_ACCESS_KEY is intentionally not accepted: one shared secret cannot
+    # enforce a boundary between the operator and a read-only display.
+    demo_operator_access_key: str = ""
+    demo_stage_access_key: str = ""
     demo_access_cookie_secure: bool = False
+    demo_trusted_https_proxy: bool = False
+    demo_enable_smoke: bool = False
     demo_memory_adapter: Literal["production", "in_memory"] = "production"
     demo_warmup: bool = False
     demo_state_db_path: str = "./data/ai_intel_bureau_state.sqlite3"
@@ -81,6 +89,33 @@ class Settings(BaseSettings):
     embedding_model: str = "YOUR_EMBEDDING_MODEL"
     embedding_dimensions: int = Field(default=1024, ge=1)
     embedding_pass_dimensions: bool = True
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        """Reject an unsafe production configuration before the app starts."""
+        if self.demo_env != "production":
+            return self
+
+        problems: list[str] = []
+        operator_key = self.demo_operator_access_key.strip()
+        stage_key = self.demo_stage_access_key.strip()
+        if len(operator_key) < 16:
+            problems.append("DEMO_OPERATOR_ACCESS_KEY must contain at least 16 characters")
+        if len(stage_key) < 16:
+            problems.append("DEMO_STAGE_ACCESS_KEY must contain at least 16 characters")
+        if operator_key and hmac.compare_digest(operator_key, stage_key):
+            problems.append("operator and stage access keys must be different")
+        if not self.demo_access_cookie_secure:
+            problems.append("DEMO_ACCESS_COOKIE_SECURE must be true")
+        if not self.demo_trusted_https_proxy:
+            problems.append("DEMO_TRUSTED_HTTPS_PROXY must be true")
+        if not self.cors_origins or any(not origin.startswith("https://") for origin in self.cors_origins):
+            problems.append("DEMO_CORS_ORIGINS must contain only explicit HTTPS origins")
+        if self.demo_enable_smoke:
+            problems.append("DEMO_ENABLE_SMOKE must remain false in production")
+        if problems:
+            raise ValueError("unsafe production configuration: " + "; ".join(problems))
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

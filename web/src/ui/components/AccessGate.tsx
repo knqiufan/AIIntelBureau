@@ -3,9 +3,11 @@ import { useState } from "react";
 export function AccessGate({
   error,
   onSubmit,
+  role = "operator",
 }: {
   error: string | null;
   onSubmit: (key: string) => Promise<void>;
+  role?: "operator" | "stage";
 }): JSX.Element {
   const [key, setKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -15,7 +17,7 @@ export function AccessGate({
       <section className="access-card">
         <span className="eyebrow">活动访问</span>
         <h1>输入活动口令</h1>
-        <p>口令只保存在当前浏览器会话中，用于连接操作端和大屏端。</p>
+        <p>{role === "operator" ? "请输入局长口令以进入操作端。" : "请输入只读大屏口令；它不能访问私有记忆。"}</p>
         <form
           onSubmit={(event) => {
             event.preventDefault();

@@ -1,12 +1,15 @@
+.git/
 .env
+.env.*
+!.env.example
 data/
 *.log
 backend/logs/
 backend/audit.log
-.git/
 web/node_modules/
 web/dist/
 web/test-results/
 web/playwright-report/
 __pycache__/
 .pytest_cache/
+docs/issues/

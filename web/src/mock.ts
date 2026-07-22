@@ -1,6 +1,6 @@
 import p1Password from "./fixtures/p1-password.json";
 import type { ApiClient, EventListener, EventStatusListener } from "./api";
-import type { AdvancedFeatures, AgentId, AnswerView, AuditTimeline, BoardAnalysis, Health, MemoryCard, Snapshot, UnsafeFixture } from "./types";
+import type { AdvancedFeatures, AgentId, AnswerView, AuditTimeline, BoardAnalysis, Health, MemoryCard, PublicMemoryCard, Snapshot, StageSnapshot, UnsafeFixture } from "./types";
 import type { GameEvent } from "./lib/guide";
 
 type ScriptId = "password" | "mole" | "allergy";
@@ -80,6 +80,31 @@ export function createMockApi(eventDelayMs = 0, storage = memoryStorage()): ApiC
     persist();
     return clone(snapshot);
   };
+  const stageSnapshotFor = (caseId: string): StageSnapshot => {
+    const snapshot = snapshotFor(caseId);
+    const publicCard = (card: MemoryCard): PublicMemoryCard => ({
+      id: card.id,
+      content: card.content,
+      topic: card.topic,
+      kind: card.kind,
+      source_agent_id: card.source_agent_id! as PublicMemoryCard["source_agent_id"],
+      created_at: card.created_at,
+    });
+    return {
+      case: clone(snapshot.case),
+      private_memory_counts: {
+        detective: snapshot.spaces.detective.length,
+        informant: snapshot.spaces.informant.length,
+        suspect: snapshot.spaces.suspect.length,
+      },
+      bulletin_board: snapshot.spaces.bulletin_board.map(publicCard),
+      last_retrieval: snapshot.last_trace ? {
+        searched_scopes: clone(snapshot.last_trace.searched_scopes),
+        public_hit_cards: snapshot.last_trace.hit_cards.filter((card) => card.visibility === "public").map(publicCard),
+        duration_ms: snapshot.last_trace.duration_ms,
+      } : null,
+    };
+  };
   const requestId = () => `mock_req_${++state.serial}`;
   const emit = (caseId: string, type: string, payload: Record<string, unknown>, id = requestId()) => {
     const event: GameEvent = { type, request_id: id, payload };
@@ -126,6 +151,7 @@ export function createMockApi(eventDelayMs = 0, storage = memoryStorage()): ApiC
       return clone(snapshot);
     },
     snapshot: async (caseId) => clone(snapshotFor(caseId)),
+    stageSnapshot: async (caseId) => clone(stageSnapshotFor(caseId)),
     health: async () => clone(health),
     advancedStatus: async () => clone(advanced),
     loadScript: async (caseId, scriptId, expectedVersion) => {
@@ -222,6 +248,17 @@ export function createMockApi(eventDelayMs = 0, storage = memoryStorage()): ApiC
     closeUnsafeFixture: async () => undefined,
     eventUrl: (caseId, afterId = 0) => `mock://cases/${caseId}/events?after_event_id=${afterId}`,
     subscribeEvents: (caseId, onEvent, onStatus) => {
+      onStatus("open");
+      const bucket = listeners.get(caseId) ?? new Set<EventListener>();
+      bucket.add(onEvent); listeners.set(caseId, bucket);
+      const timers = (state.events[caseId] ?? []).map((event, index) => setTimeout(() => onEvent(clone(event)), eventDelayMs * (index + 1)));
+      return () => {
+        timers.forEach((timer) => clearTimeout(timer));
+        bucket.delete(onEvent);
+        if (bucket.size === 0) listeners.delete(caseId);
+      };
+    },
+    subscribeStageEvents: (caseId, onEvent, onStatus) => {
       onStatus("open");
       const bucket = listeners.get(caseId) ?? new Set<EventListener>();
       bucket.add(onEvent); listeners.set(caseId, bucket);

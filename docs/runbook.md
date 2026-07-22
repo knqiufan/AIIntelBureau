@@ -24,3 +24,9 @@ python -m app.clear_demo_data --confirm
 ```
 
 只有明确要保留远端卡片时，才使用 `--confirm --local-only`。
+
+## 生产启动检查
+
+生产环境必须通过受控 HTTPS 反向代理访问，并使用：`DEMO_ENV=production`、不同的局长/大屏口令、`DEMO_ACCESS_COOKIE_SECURE=true`、`DEMO_TRUSTED_HTTPS_PROXY=true` 和仅含明确 HTTPS 来源的 `DEMO_CORS_ORIGINS`。任一项不满足时应用会在启动前失败，且不会打印口令。
+
+使用 `docker compose --profile production up --build`；不要在生产机运行 development profile。生产 profile 不映射 API 宿主机端口，只有 Nginx 对外服务。

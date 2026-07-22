@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: no-logs-or-secrets
+        name: reject tracked logs and high-confidence secrets
+        entry: python scripts/security_check.py
+        language: system
+        pass_filenames: false

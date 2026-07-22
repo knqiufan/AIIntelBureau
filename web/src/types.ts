@@ -47,6 +47,28 @@ export interface Snapshot {
   last_answer?: AnswerView | null;
 }
 
+export interface PublicMemoryCard {
+  id: string;
+  content: string;
+  topic: string;
+  kind: string;
+  source_agent_id: Exclude<AgentId, "bulletin_board">;
+  created_at: string;
+}
+
+export interface StageRetrieval {
+  searched_scopes: AgentId[];
+  public_hit_cards: PublicMemoryCard[];
+  duration_ms: number;
+}
+
+export interface StageSnapshot {
+  case: CaseState;
+  private_memory_counts: Record<Exclude<AgentId, "bulletin_board">, number>;
+  bulletin_board: PublicMemoryCard[];
+  last_retrieval?: StageRetrieval | null;
+}
+
 export interface HealthPart {
   status: "ok" | "degraded" | "unconfigured" | "error";
   detail: string;

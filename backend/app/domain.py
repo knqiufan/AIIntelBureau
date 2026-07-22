@@ -114,6 +114,63 @@ class CaseSnapshot(BaseModel):
     last_answer: AnswerView | None = None
 
 
+class PublicMemoryCard(BaseModel):
+    """A bulletin-board card safe for an untrusted display client.
+
+    The original private-memory identifier is deliberately absent.  A public
+    replica remains traceable to its role, but cannot be used to address or
+    enumerate the source private space.
+    """
+
+    id: str
+    content: str
+    topic: str = "general"
+    kind: str = "evidence"
+    source_agent_id: AgentId
+    created_at: datetime
+
+
+class StageRetrievalView(BaseModel):
+    """Display-safe activity status, never an operator question or answer."""
+
+    searched_scopes: list[AgentId]
+    public_hit_cards: list[PublicMemoryCard]
+    duration_ms: int = Field(ge=0)
+
+
+class StageSnapshot(BaseModel):
+    """Read-only projection for the stage display.
+
+    Private spaces are represented only by their counts.  Any text in this
+    DTO originates from a bulletin-board replica.
+    """
+
+    case: CaseState
+    private_memory_counts: dict[AgentId, int]
+    bulletin_board: list[PublicMemoryCard]
+    last_retrieval: StageRetrievalView | None = None
+
+
+class PublicSnapshot(BaseModel):
+    """Minimal projection for an unauthenticated visitor."""
+
+    case: CaseState
+    bulletin_board: list[PublicMemoryCard]
+
+
+class StageEvent(BaseModel):
+    """Sanitized event envelope for stage SSE.
+
+    Event payloads intentionally omit private-memory IDs, operator input,
+    retrieval IDs, source IDs, and answer text.
+    """
+
+    event_id: int
+    type: str
+    created_at: datetime
+    payload: dict[str, Any]
+
+
 class WhisperResponse(BaseModel):
     card: MemoryCard
     snapshot: CaseSnapshot

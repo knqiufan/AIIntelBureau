@@ -10,13 +10,14 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
+from enum import StrEnum
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .domain import AdvancedFeaturesView, AgentId, AnswerView, AuditTimeline, BoardAnalysisRequest, BoardAnalysisView, CaseSnapshot, HealthView, InterrogationRequest, MetricsView, PublicationRequest, PublicationResponse, ResetRequest, ScriptRequest, UnsafeFixtureView, WhisperRequest, WhisperResponse
+from .domain import AdvancedFeaturesView, AgentId, AnswerView, AuditTimeline, BoardAnalysisRequest, BoardAnalysisView, CaseSnapshot, HealthView, InterrogationRequest, MetricsView, PublicationRequest, PublicationResponse, PublicSnapshot, ResetRequest, ScriptRequest, StageSnapshot, UnsafeFixtureView, WhisperRequest, WhisperResponse
 from .memory import MemoryGateway, build_gateway
 from .observability import RuntimeMetrics, configure_logging, request_id_context
 from .repository import CaseNotFoundError, StateRepository, VersionConflictError
@@ -24,12 +25,66 @@ from .services import AccessViolationError, AdvancedFeatureDisabledError, Bureau
 from .settings import Settings, get_settings
 
 
-ACCESS_COOKIE_NAME = "ai_intel_bureau_access"
+class Principal(StrEnum):
+    OPERATOR = "operator"
+    STAGE = "stage"
+    PUBLIC = "public"
+    DEVELOPMENT = "development"
 
 
-def _access_cookie_value(access_key: str) -> str:
-    """A stable opaque session value; the original passcode never enters a URL."""
-    return hmac.new(access_key.encode("utf-8"), b"ai-intel-bureau-session-v1", hashlib.sha256).hexdigest()
+ACCESS_COOKIE_NAMES = {
+    Principal.OPERATOR: "ai_intel_bureau_operator_session",
+    Principal.STAGE: "ai_intel_bureau_stage_session",
+}
+
+
+def _access_cookie_value(access_key: str, principal: Principal) -> str:
+    """A stable opaque session value scoped to one server-side principal."""
+    message = f"ai-intel-bureau-session-v2:{principal.value}".encode("utf-8")
+    return hmac.new(access_key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _principal_from_request(request: Request, settings: Settings) -> Principal:
+    """Resolve credentials without treating a case ID as authorization."""
+    supplied_key = request.headers.get("X-Demo-Access-Key", "")
+    operator_key = settings.demo_operator_access_key.strip()
+    stage_key = settings.demo_stage_access_key.strip()
+    if operator_key and hmac.compare_digest(supplied_key, operator_key):
+        return Principal.OPERATOR
+    if stage_key and hmac.compare_digest(supplied_key, stage_key):
+        return Principal.STAGE
+
+    valid_operator_cookie = operator_key and hmac.compare_digest(
+        request.cookies.get(ACCESS_COOKIE_NAMES[Principal.OPERATOR], ""),
+        _access_cookie_value(operator_key, Principal.OPERATOR),
+    )
+    valid_stage_cookie = stage_key and hmac.compare_digest(
+        request.cookies.get(ACCESS_COOKIE_NAMES[Principal.STAGE], ""),
+        _access_cookie_value(stage_key, Principal.STAGE),
+    )
+    # A browser may hold both cookies after an operator tested the stage.  Keep
+    # their roles separate by selecting the cookie appropriate to the route.
+    if request.url.path.endswith("/stage-snapshot") or request.url.path.endswith("/stage-events"):
+        if valid_stage_cookie:
+            return Principal.STAGE
+        if valid_operator_cookie:
+            return Principal.OPERATOR
+    if valid_operator_cookie:
+        return Principal.OPERATOR
+    if valid_stage_cookie:
+        return Principal.STAGE
+    if settings.demo_env == "development" and not operator_key and not stage_key:
+        return Principal.DEVELOPMENT
+    return Principal.PUBLIC
+
+
+def _require_principal(request: Request, expected: Principal) -> None:
+    actual = request.state.principal
+    if actual == expected or actual == Principal.DEVELOPMENT:
+        return
+    if actual == Principal.PUBLIC:
+        raise HTTPException(status_code=401, detail={"code": "ACCESS_KEY_REQUIRED", "message": "需要对应角色的访问口令。"})
+    raise HTTPException(status_code=403, detail={"code": "ROLE_FORBIDDEN", "message": "当前会话无权访问此资源。"})
 
 
 def create_app(settings: Settings | None = None, gateway: MemoryGateway | None = None, repository: StateRepository | None = None) -> FastAPI:
@@ -66,15 +121,8 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
         request_token = request_id_context.set(request_id)
         started = time.perf_counter()
         try:
-            protected = request.url.path.startswith("/api/") and request.url.path not in {"/api/healthz", "/api/readyz"}
-            supplied_key = request.headers.get("X-Demo-Access-Key", "")
-            supplied_cookie = request.cookies.get(ACCESS_COOKIE_NAME, "")
-            valid_header = bool(settings.demo_access_key) and hmac.compare_digest(supplied_key, settings.demo_access_key)
-            valid_cookie = bool(settings.demo_access_key) and hmac.compare_digest(supplied_cookie, _access_cookie_value(settings.demo_access_key))
-            if settings.demo_access_key and protected and not (valid_header or valid_cookie):
-                response = _error(401, "ACCESS_KEY_REQUIRED", "需要活动口令才能访问此演示。")
-            else:
-                response = await call_next(request)
+            request.state.principal = _principal_from_request(request, settings)
+            response = await call_next(request)
         except Exception as exc:
             logger.error("http.request_failed", extra={"request_id": request_id, "path": request.url.path, "mode": settings.demo_mode, "failure_type": type(exc).__name__})
             raise
@@ -134,30 +182,36 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
         return health
 
     @app.post("/api/session", status_code=204)
-    def establish_activity_session():
-        """The middleware has already checked the passcode header or cookie."""
+    def establish_activity_session(request: Request):
+        """Exchange one role-specific passcode for its HttpOnly session cookie."""
+        principal: Principal = request.state.principal
+        if principal not in {Principal.OPERATOR, Principal.STAGE}:
+            return _error(401, "ACCESS_KEY_REQUIRED", "需要有效的局长或大屏访问口令。")
         response = Response(status_code=204)
-        if settings.demo_access_key:
-            response.set_cookie(
-                ACCESS_COOKIE_NAME,
-                _access_cookie_value(settings.demo_access_key),
-                httponly=True,
-                secure=settings.demo_access_cookie_secure,
-                samesite="lax",
-                path="/",
-            )
+        key = settings.demo_operator_access_key if principal == Principal.OPERATOR else settings.demo_stage_access_key
+        response.set_cookie(
+            ACCESS_COOKIE_NAMES[principal],
+            _access_cookie_value(key, principal),
+            httponly=True,
+            secure=settings.demo_access_cookie_secure,
+            samesite="lax",
+            path="/",
+        )
         return response
 
     @app.get("/api/advanced/status", response_model=AdvancedFeaturesView)
-    def advanced_status():
+    def advanced_status(request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.advanced_features()
 
     @app.post("/api/advanced/unsafe-fixture", response_model=UnsafeFixtureView)
-    def start_unsafe_fixture():
+    def start_unsafe_fixture(request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.start_unsafe_fixture()
 
     @app.delete("/api/advanced/unsafe-fixture/{fixture_id}", status_code=204)
-    def close_unsafe_fixture(fixture_id: str):
+    def close_unsafe_fixture(fixture_id: str, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         # The fixture lives only in the process-local lab and has no storage
         # side effects. A missing id is already equivalent to a cleared case.
         service.close_unsafe_fixture(fixture_id)
@@ -165,51 +219,71 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
 
     @app.post("/api/cases", response_model=CaseSnapshot)
     def create_case(request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.create_case(request.state.request_id)
 
     @app.post("/api/cases/{case_id}/script", response_model=CaseSnapshot)
     def load_script(case_id: str, body: ScriptRequest, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.load_script(case_id, body.script_id, body.expected_version, request.state.request_id)
 
     @app.post("/api/cases/{case_id}/reset", response_model=CaseSnapshot)
     def reset_case(case_id: str, body: ResetRequest, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.reset_case(case_id, body.expected_version, request.state.request_id)
 
     @app.post("/api/cases/{case_id}/whispers", response_model=WhisperResponse)
     def whisper(case_id: str, body: WhisperRequest, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         card, snapshot = service.whisper(case_id, body.agent_id, body.text, body.expected_version, request.state.request_id)
         return {"card": card, "snapshot": snapshot}
 
     @app.post("/api/cases/{case_id}/interrogations", response_model=AnswerView)
     def interrogate(case_id: str, body: InterrogationRequest, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.ask(case_id, body.agent_id, body.question, body.expected_version, request.state.request_id)
 
     @app.post("/api/cases/{case_id}/publications", response_model=PublicationResponse)
     def publish(case_id: str, body: PublicationRequest, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         card, idempotent, snapshot = service.publish(case_id, body.source_agent_id, body.memory_id, body.expected_version, request.state.request_id)
         return {"card": card, "idempotent": idempotent, "snapshot": snapshot}
 
-    @app.get("/api/cases/{case_id}/snapshot", response_model=CaseSnapshot)
-    def snapshot(case_id: str):
+    @app.get("/api/cases/{case_id}/operator-snapshot", response_model=CaseSnapshot)
+    def operator_snapshot(case_id: str, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.snapshot(case_id)
 
+    @app.get("/api/cases/{case_id}/stage-snapshot", response_model=StageSnapshot)
+    def stage_snapshot(case_id: str, request: Request):
+        _require_principal(request, Principal.STAGE)
+        return service.stage_snapshot(case_id)
+
+    @app.get("/api/cases/{case_id}/public-snapshot", response_model=PublicSnapshot)
+    def public_snapshot(case_id: str):
+        return service.public_snapshot(case_id)
+
     @app.get("/api/cases/{case_id}/audit", response_model=AuditTimeline)
-    def audit_timeline(case_id: str):
+    def audit_timeline(case_id: str, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.audit_timeline(case_id)
 
     @app.post("/api/cases/{case_id}/board-analysis", response_model=BoardAnalysisView)
-    def board_analysis(case_id: str, body: BoardAnalysisRequest):
+    def board_analysis(case_id: str, body: BoardAnalysisRequest, request: Request):
+        _require_principal(request, Principal.OPERATOR)
         return service.analyze_public_board(case_id, body.query)
 
     @app.get("/api/metrics", response_model=MetricsView)
-    def metrics():
+    def metrics(request: Request):
+        _require_principal(request, Principal.OPERATOR)
         aggregate = service.metrics()
         aggregate.update(runtime_metrics.snapshot())
         aggregate["case_ready_rate_percent"] = round((aggregate["cases_ready"] / aggregate["cases_total"] * 100) if aggregate["cases_total"] else 0, 2)
         return aggregate
 
-    @app.get("/api/cases/{case_id}/events")
-    async def events(case_id: str, after_event_id: int = 0):
+    @app.get("/api/cases/{case_id}/operator-events")
+    async def operator_events(case_id: str, request: Request, after_event_id: int = 0):
+        _require_principal(request, Principal.OPERATOR)
         service.snapshot(case_id)  # Validate before returning a long-lived connection.
 
         async def stream() -> AsyncIterator[str]:
@@ -222,16 +296,33 @@ def create_app(settings: Settings | None = None, gateway: MemoryGateway | None =
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    @app.post("/api/_smoke/password-flow")
-    def password_smoke():
-        case = service.create_case().case
-        loaded = service.load_script(case.case_id, "password", case.version)
-        detective_before = service.ask(case.case_id, AgentId.DETECTIVE, "保险箱密码是多少？", loaded.case.version)
-        informant = service.ask(case.case_id, AgentId.INFORMANT, "保险箱密码是多少？", loaded.case.version)
-        source = next(card for card in loaded.spaces[AgentId.INFORMANT] if card.topic == "password")
-        _, _, published = service.publish(case.case_id, AgentId.INFORMANT, source.id, loaded.case.version)
-        detective_after = service.ask(case.case_id, AgentId.DETECTIVE, "保险箱密码是多少？", published.case.version)
-        return {"case_id": case.case_id, "detective_before": detective_before, "informant": informant, "detective_after": detective_after}
+    @app.get("/api/cases/{case_id}/stage-events")
+    async def stage_events(case_id: str, request: Request, after_event_id: int = 0):
+        _require_principal(request, Principal.STAGE)
+        service.stage_snapshot(case_id)  # Validate before returning a long-lived connection.
+
+        async def stream() -> AsyncIterator[str]:
+            cursor = after_event_id
+            while True:
+                for event in service.stage_events_after(case_id, cursor):
+                    cursor = event.event_id
+                    yield f"id: {event.event_id}\nevent: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    if settings.demo_enable_smoke:
+        @app.post("/api/_smoke/password-flow")
+        def password_smoke(request: Request):
+            _require_principal(request, Principal.OPERATOR)
+            case = service.create_case().case
+            loaded = service.load_script(case.case_id, "password", case.version)
+            detective_before = service.ask(case.case_id, AgentId.DETECTIVE, "保险箱密码是多少？", loaded.case.version)
+            informant = service.ask(case.case_id, AgentId.INFORMANT, "保险箱密码是多少？", loaded.case.version)
+            source = next(card for card in loaded.spaces[AgentId.INFORMANT] if card.topic == "password")
+            _, _, published = service.publish(case.case_id, AgentId.INFORMANT, source.id, loaded.case.version)
+            detective_after = service.ask(case.case_id, AgentId.DETECTIVE, "保险箱密码是多少？", published.case.version)
+            return {"case_id": case.case_id, "detective_before": detective_before, "informant": informant, "detective_after": detective_after}
 
     return app
 

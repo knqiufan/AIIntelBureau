@@ -12,7 +12,9 @@ from typing import Any
 from .domain import (
     AdvancedFeaturesView, AgentId, AnswerView, AuditEntry, AuditTimeline,
     BoardAnalysisView, CaseSnapshot, CaseState, Certainty, DomainEvent,
-    HealthPart, HealthView, MemoryCard, ROLE_IDS, RetrievalTrace, UnsafeFixtureView,
+    HealthPart, HealthView, MemoryCard, PublicMemoryCard, PublicSnapshot,
+    ROLE_IDS, RetrievalTrace, StageEvent, StageRetrievalView, StageSnapshot,
+    UnsafeFixtureView,
 )
 from .bureau_analyst import PublicBoardAnalyst
 from .memory import MemoryGateway
@@ -309,9 +311,94 @@ class BureauService:
         latest_answer = self._last_answers.get(case_id)
         return CaseSnapshot(case=case, spaces=spaces, last_trace=latest_answer.trace if latest_answer else None, last_answer=latest_answer)
 
+    @staticmethod
+    def _public_card(card: MemoryCard) -> PublicMemoryCard:
+        """Project a public replica without retaining a private source ID."""
+        if card.owner_agent_id != AgentId.BULLETIN_BOARD or card.visibility.value != "public" or card.source_agent_id is None:
+            raise AccessViolationError("only bulletin-board replicas may enter a display projection")
+        return PublicMemoryCard(
+            id=card.id,
+            content=card.content,
+            topic=card.topic,
+            kind=card.kind,
+            source_agent_id=card.source_agent_id,
+            created_at=card.created_at,
+        )
+
+    def stage_snapshot(self, case_id: str) -> StageSnapshot:
+        """Return the stage projection without serializing any private card."""
+        snapshot = self.snapshot(case_id)
+        latest_trace = snapshot.last_trace
+        stage_trace = None
+        if latest_trace:
+            stage_trace = StageRetrievalView(
+                searched_scopes=latest_trace.searched_scopes,
+                public_hit_cards=[
+                    self._public_card(card)
+                    for card in latest_trace.hit_cards
+                    if card.visibility.value == "public" and card.owner_agent_id == AgentId.BULLETIN_BOARD
+                ],
+                duration_ms=latest_trace.duration_ms,
+            )
+        return StageSnapshot(
+            case=snapshot.case,
+            private_memory_counts={agent_id: len(snapshot.spaces[agent_id]) for agent_id in ROLE_IDS},
+            bulletin_board=[self._public_card(card) for card in snapshot.spaces[AgentId.BULLETIN_BOARD]],
+            last_retrieval=stage_trace,
+        )
+
+    def public_snapshot(self, case_id: str) -> PublicSnapshot:
+        """Return the smallest unauthenticated representation of a case."""
+        snapshot = self.snapshot(case_id)
+        return PublicSnapshot(
+            case=snapshot.case,
+            bulletin_board=[self._public_card(card) for card in snapshot.spaces[AgentId.BULLETIN_BOARD]],
+        )
+
     def events_after(self, case_id: str, after_event_id: int) -> list[DomainEvent]:
         self.repository.get_case(case_id)
         return self.repository.events_after(case_id, after_event_id)
+
+    def stage_events_after(self, case_id: str, after_event_id: int) -> list[StageEvent]:
+        """Sanitize the event stream before it reaches a read-only display."""
+        safe_events: list[StageEvent] = []
+        for event in self.events_after(case_id, after_event_id):
+            payload = event.payload
+            safe_payload: dict[str, Any]
+            if event.type in {"case.created", "case.reset"}:
+                safe_payload = {key: payload[key] for key in ("version", "status") if key in payload}
+            elif event.type == "script.loaded":
+                safe_payload = {key: payload[key] for key in ("script_id", "version") if key in payload}
+            elif event.type == "memory.created":
+                # It reports activity, not the private card identifier or topic.
+                safe_payload = {key: payload[key] for key in ("owner_agent_id", "visibility") if key in payload}
+            elif event.type == "memory.published":
+                public_card = payload.get("public_card")
+                safe_payload = {"published": True}
+                if isinstance(public_card, dict):
+                    try:
+                        # The stored event is a metadata-only card, so obtain the
+                        # canonical public card from the current gateway instead.
+                        public_id = public_card.get("card_id")
+                        if isinstance(public_id, str):
+                            card = self.gateway.get_private(case_id, AgentId.BULLETIN_BOARD, public_id)
+                            if card:
+                                safe_payload["public_card"] = self._public_card(card).model_dump(mode="json")
+                    except (AccessViolationError, ValueError):
+                        pass
+            elif event.type in {"memory.publishing", "retrieval.completed", "answer.completed", "agent.fallback"}:
+                safe_payload = {"completed": True}
+            else:
+                # New event types must opt in to a projection; an empty payload
+                # preserves progress updates without leaking future fields.
+                safe_payload = {}
+            safe_events.append(StageEvent(
+                event_id=event.event_id,
+                type=event.type,
+                created_at=event.created_at,
+                payload=safe_payload,
+            ))
+        return safe_events
 
     def advanced_features(self) -> AdvancedFeaturesView:
         enabled = self.settings.demo_advanced_features_enabled

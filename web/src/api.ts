@@ -1,6 +1,6 @@
 import { createMockApi } from "./mock";
 import type { GameEvent } from "./lib/guide";
-import type { AdvancedFeatures, AgentId, AnswerView, AuditTimeline, BoardAnalysis, Health, Snapshot, UnsafeFixture } from "./types";
+import type { AdvancedFeatures, AgentId, AnswerView, AuditTimeline, BoardAnalysis, Health, Snapshot, StageSnapshot, UnsafeFixture } from "./types";
 
 export type EventStatus = "open" | "error";
 export type EventListener = (event: GameEvent) => void;
@@ -19,6 +19,7 @@ export interface ApiClient {
   establishActivitySession: () => Promise<void>;
   createCase: () => Promise<Snapshot>;
   snapshot: (caseId: string) => Promise<Snapshot>;
+  stageSnapshot: (caseId: string) => Promise<StageSnapshot>;
   health: () => Promise<Health>;
   advancedStatus: () => Promise<AdvancedFeatures>;
   loadScript: (caseId: string, scriptId: "password" | "mole" | "allergy", expectedVersion: number) => Promise<Snapshot>;
@@ -32,11 +33,11 @@ export interface ApiClient {
   closeUnsafeFixture: (fixtureId: string) => Promise<void>;
   eventUrl: (caseId: string, afterId?: number) => string;
   subscribeEvents: (caseId: string, onEvent: EventListener, onStatus: EventStatusListener) => () => void;
+  subscribeStageEvents: (caseId: string, onEvent: EventListener, onStatus: EventStatusListener) => () => void;
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-const ACTIVITY_KEY_STORAGE = "ai-intel-bureau.activity-access-key";
-let activityKey = typeof sessionStorage === "undefined" ? "" : sessionStorage.getItem(ACTIVITY_KEY_STORAGE) ?? "";
+let activityKey = "";
 
 function endpoint(path: string): string {
   return `${API_BASE}${path}`;
@@ -61,14 +62,19 @@ const httpApi: ApiClient = {
   isMock: false,
   setActivityKey: (key) => {
     activityKey = key.trim();
-    if (typeof sessionStorage !== "undefined") {
-      if (activityKey) sessionStorage.setItem(ACTIVITY_KEY_STORAGE, activityKey);
-      else sessionStorage.removeItem(ACTIVITY_KEY_STORAGE);
+  },
+  establishActivitySession: async () => {
+    try {
+      await request<void>("/api/session", { method: "POST" });
+    } finally {
+      // Only the passcode exchange uses a header.  Subsequent API and SSE
+      // traffic relies on the HttpOnly, role-scoped session cookie.
+      activityKey = "";
     }
   },
-  establishActivitySession: () => request<void>("/api/session", { method: "POST" }),
   createCase: () => request<Snapshot>("/api/cases", { method: "POST" }),
-  snapshot: (caseId: string) => request<Snapshot>(`/api/cases/${caseId}/snapshot`),
+  snapshot: (caseId: string) => request<Snapshot>(`/api/cases/${caseId}/operator-snapshot`),
+  stageSnapshot: (caseId: string) => request<StageSnapshot>(`/api/cases/${caseId}/stage-snapshot`),
   health: () => request<Health>("/api/healthz"),
   advancedStatus: () => request<AdvancedFeatures>("/api/advanced/status"),
   loadScript: (caseId: string, scriptId: "password" | "mole" | "allergy", expectedVersion: number) =>
@@ -85,9 +91,19 @@ const httpApi: ApiClient = {
   analyzeBoard: (caseId: string, query: string) => request<BoardAnalysis>(`/api/cases/${caseId}/board-analysis`, { method: "POST", body: JSON.stringify({ query }) }),
   startUnsafeFixture: () => request<UnsafeFixture>("/api/advanced/unsafe-fixture", { method: "POST" }),
   closeUnsafeFixture: (fixtureId: string) => request<void>(`/api/advanced/unsafe-fixture/${fixtureId}`, { method: "DELETE" }),
-  eventUrl: (caseId: string, afterId = 0) => endpoint(`/api/cases/${caseId}/events?after_event_id=${afterId}`),
+  eventUrl: (caseId: string, afterId = 0) => endpoint(`/api/cases/${caseId}/operator-events?after_event_id=${afterId}`),
   subscribeEvents: (caseId, onEvent, onStatus) => {
     const source = new EventSource(httpApi.eventUrl(caseId), { withCredentials: true });
+    const update = (event: Event) => {
+      try { onEvent(JSON.parse((event as MessageEvent<string>).data) as GameEvent); } catch { /* Snapshot refresh remains available. */ }
+    };
+    eventTypes.forEach((eventType) => source.addEventListener(eventType, update));
+    source.onerror = () => onStatus("error");
+    source.onopen = () => onStatus("open");
+    return () => source.close();
+  },
+  subscribeStageEvents: (caseId, onEvent, onStatus) => {
+    const source = new EventSource(endpoint(`/api/cases/${caseId}/stage-events?after_event_id=0`), { withCredentials: true });
     const update = (event: Event) => {
       try { onEvent(JSON.parse((event as MessageEvent<string>).data) as GameEvent); } catch { /* Snapshot refresh remains available. */ }
     };

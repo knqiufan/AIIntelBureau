@@ -178,15 +178,21 @@ npm run dev
 
 > 纯离线排版 / 开发：在根目录 `.env` 设置 `VITE_DEMO_DATA_SOURCE=mock`，前端只使用 `web/src/fixtures/p1-password.json` 与 `VITE_MOCK_EVENT_DELAY_MS` 事件时钟，不连接 API、PowerMem、SeekDB 或 LLM。默认值仍是 `api`。
 
-## Docker 一键启动
+## Docker 部署
 
-配置好 `.env` 后，在仓库根目录执行：
+本地开发使用明确的 development profile（API 端口仅绑定 `127.0.0.1`）：
 
 ```bash
-docker compose up --build
+docker compose --profile development up --build
 ```
 
-访问 `http://localhost:8080`。
+生产部署前，必须在 `.env` 里显式设置 `DEMO_ENV=production`、不同且至少 16 位的 `DEMO_OPERATOR_ACCESS_KEY` 与 `DEMO_STAGE_ACCESS_KEY`、`DEMO_ACCESS_COOKIE_SECURE=true`、`DEMO_TRUSTED_HTTPS_PROXY=true`，并将 `DEMO_CORS_ORIGINS` 设为明确的 HTTPS 来源。缺少任一条件时 API 会拒绝启动。确认后运行：
+
+```bash
+docker compose --profile production up --build
+```
+
+生产 profile 只对外发布 Nginx；API 仅以 Compose 内部 `expose` 暴露。TLS 必须在其前方的受控反向代理或负载均衡器处终止。
 
 - `/api/readyz` 只在记忆服务可用、预热通过时返回成功（用于 Compose 的 `depends_on: service_healthy`）。
 - `/api/healthz` 分别报告 API、PowerMem、seekdb 与 LLM 状态；LLM 未配置时为黄灯（证据模式），不阻碍隔离演示。
@@ -202,7 +208,7 @@ docker compose up --build
 ## 安全与隐私边界
 
 - **仅限虚构情报**：后端始终拒绝明显的手机号、身份证号模式；`DEMO_DISALLOWED_WHISPER_TERMS` 可追加现场禁用词，`DEMO_WHISPER_RATE_LIMIT_PER_MINUTE` 控制每案件、每角色的写入频率。被拒绝的内容不会写进日志或 SSE 事件。
-- **活动口令**：公网展示时设置非空 `DEMO_ACCESS_KEY`，操作端 / 大屏端会要求一次性口令，受保护 API 与 SSE 也会校验；浏览器用口令换取 HttpOnly 会话 Cookie，**SSE URL 不含口令**。请把 Compose 部署在提供 HTTPS 的反代 / 负载均衡之后，并设置 `DEMO_ACCESS_COOKIE_SECURE=true`；不要把 `.env` 或口令打进前端构建产物。
+- **角色访问边界**：局长操作端和只读大屏分别使用不同口令，换取不同的 HttpOnly Cookie。局长 DTO 才能返回私有卡；大屏 DTO 与 SSE 仅含私有计数、非敏感状态和公告板副本；公开 DTO 仅含公告板。SSE URL 不含口令，浏览器也不会把口令写入 sessionStorage。不要把 `.env` 或口令打进前端构建产物。
 - **P4 公开材料分析**只接收公告板检索结果，绝不枚举或检索私有空间；「反面教材」fixture 是进程内隔离的，且仅在关闭自由耳语时可用。边界与开关见 [`docs/P4_RESULT.md`](./docs/P4_RESULT.md)。
 
 ## 相关技术框架

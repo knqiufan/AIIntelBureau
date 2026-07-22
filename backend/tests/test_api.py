@@ -6,6 +6,7 @@ from app.domain import AgentId
 from app.main import create_app
 from app.memory import InMemoryGateway
 from app.repository import StateRepository
+from app.settings import Settings
 
 
 def test_api_contract_and_smoke_endpoint(settings):
@@ -135,18 +136,85 @@ def test_api_returns_a_clean_rate_limit_response_for_freeform_input(settings):
     assert second.json()["detail"]["code"] == "WHISPER_RATE_LIMIT"
 
 
-def test_optional_activity_access_key_protects_game_routes_but_not_health(settings):
-    protected = settings.model_copy(update={"demo_access_key": "demo-passphrase"})
+def test_role_scoped_access_sessions_protect_game_routes_but_not_health(settings):
+    protected = settings.model_copy(update={
+        "demo_operator_access_key": "operator-passphrase-12345",
+        "demo_stage_access_key": "stage-passphrase-67890123",
+    })
     app = create_app(settings=protected, gateway=InMemoryGateway(), repository=StateRepository(protected.demo_state_db_path))
     client = TestClient(app)
 
     assert client.get("/api/healthz").status_code == 200
     denied = client.post("/api/cases")
-    session = client.post("/api/session", headers={"X-Demo-Access-Key": "demo-passphrase"})
+    session = client.post("/api/session", headers={"X-Demo-Access-Key": "operator-passphrase-12345"})
     allowed = client.post("/api/cases")
 
     assert denied.status_code == 401
     assert denied.json()["detail"]["code"] == "ACCESS_KEY_REQUIRED"
     assert session.status_code == 204
-    assert "demo-passphrase" not in session.headers["set-cookie"]
+    assert "operator-passphrase-12345" not in session.headers["set-cookie"]
+    assert "ai_intel_bureau_operator_session" in session.headers["set-cookie"]
     assert allowed.status_code == 200
+
+
+def test_operator_stage_and_public_projections_enforce_role_and_do_not_leak_private_cards(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        demo_env="production",
+        demo_state_db_path=str(tmp_path / "state.sqlite3"),
+        demo_operator_access_key="operator-passphrase-12345",
+        demo_stage_access_key="stage-passphrase-67890123",
+        demo_access_cookie_secure=True,
+        demo_trusted_https_proxy=True,
+        demo_cors_origins="https://demo.example.test",
+    )
+    app = create_app(settings=settings, gateway=InMemoryGateway(), repository=StateRepository(settings.demo_state_db_path))
+    client = TestClient(app)
+    operator_headers = {"X-Demo-Access-Key": settings.demo_operator_access_key}
+    stage_headers = {"X-Demo-Access-Key": settings.demo_stage_access_key}
+
+    first_case = client.post("/api/cases", headers=operator_headers).json()["case"]
+    loaded = client.post(
+        f"/api/cases/{first_case['case_id']}/script",
+        headers=operator_headers,
+        json={"script_id": "password", "expected_version": first_case["version"]},
+    )
+    assert loaded.status_code == 200
+    second_case = client.post("/api/cases", headers=operator_headers).json()["case"]
+
+    unauthenticated_operator = client.get(f"/api/cases/{first_case['case_id']}/operator-snapshot")
+    unauthenticated_stage = client.get(f"/api/cases/{first_case['case_id']}/stage-snapshot")
+    wrong_role_operator = client.get(f"/api/cases/{first_case['case_id']}/operator-snapshot", headers=stage_headers)
+    wrong_role_stage = client.get(f"/api/cases/{first_case['case_id']}/stage-snapshot", headers=operator_headers)
+    operator_snapshot = client.get(f"/api/cases/{first_case['case_id']}/operator-snapshot", headers=operator_headers)
+    stage_snapshot = client.get(f"/api/cases/{first_case['case_id']}/stage-snapshot", headers=stage_headers)
+    public_snapshot = client.get(f"/api/cases/{first_case['case_id']}/public-snapshot")
+    other_case_stage = client.get(f"/api/cases/{second_case['case_id']}/stage-snapshot", headers=stage_headers)
+
+    private_text = "保险箱密码是 0427"
+    assert unauthenticated_operator.status_code == 401
+    assert unauthenticated_stage.status_code == 401
+    assert wrong_role_operator.status_code == 403
+    assert wrong_role_stage.status_code == 403
+    assert operator_snapshot.status_code == 200
+    assert private_text in operator_snapshot.text
+    assert stage_snapshot.status_code == 200
+    assert private_text not in stage_snapshot.text
+    assert "source_memory_id" not in stage_snapshot.text
+    assert stage_snapshot.json()["private_memory_counts"]["informant"] == 1
+    assert public_snapshot.status_code == 200
+    assert private_text not in public_snapshot.text
+    assert "private_memory_counts" not in public_snapshot.text
+    assert other_case_stage.status_code == 200
+    assert private_text not in other_case_stage.text
+
+    stage_events = app.state.service.stage_events_after(first_case["case_id"], 0)
+    serialized_events = "".join(event.model_dump_json() for event in stage_events)
+    assert private_text not in serialized_events
+    assert "source_memory_id" not in serialized_events
+    assert "hit_card_ids" not in serialized_events
+
+
+def test_smoke_route_is_not_registered_unless_explicitly_enabled(settings):
+    app = create_app(settings=settings, gateway=InMemoryGateway(), repository=StateRepository(settings.demo_state_db_path))
+    assert TestClient(app).post("/api/_smoke/password-flow").status_code == 404
