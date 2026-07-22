@@ -104,7 +104,8 @@ class StateRepository:
         return case
 
     def get_case(self, case_id: str) -> CaseState:
-        row = self._connection.execute("SELECT * FROM demo_cases WHERE case_id = ?", (case_id,)).fetchone()
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM demo_cases WHERE case_id = ?", (case_id,)).fetchone()
         if not row:
             raise CaseNotFoundError(case_id)
         return CaseState(
@@ -132,9 +133,10 @@ class StateRepository:
         return DomainEvent(event_id=int(cursor.lastrowid), case_id=case_id, type=event_type, request_id=request_id, payload=payload, created_at=created_at)
 
     def events_after(self, case_id: str, after_event_id: int = 0) -> list[DomainEvent]:
-        rows = self._connection.execute(
-            "SELECT * FROM demo_events WHERE case_id = ? AND event_id > ? ORDER BY event_id", (case_id, after_event_id)
-        ).fetchall()
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM demo_events WHERE case_id = ? AND event_id > ? ORDER BY event_id", (case_id, after_event_id)
+            ).fetchall()
         return [
             DomainEvent(event_id=row["event_id"], case_id=row["case_id"], type=row["type"], request_id=row["request_id"], payload=json.loads(row["payload_json"]), created_at=row["created_at"])
             for row in rows
@@ -162,6 +164,16 @@ class StateRepository:
                 (public_card_id, case_id, source_memory_id),
             )
             if result.rowcount != 1:
+                # A second worker may reconcile the same immutable public
+                # card between its remote write and this local completion.
+                # Treat that exact ready state as an idempotent completion,
+                # while rejecting a genuinely different reservation outcome.
+                row = self._connection.execute(
+                    "SELECT public_card_id, status FROM demo_publications WHERE case_id = ? AND source_memory_id = ?",
+                    (case_id, source_memory_id),
+                ).fetchone()
+                if row and row["status"] == "ready" and row["public_card_id"] == public_card_id:
+                    return
                 raise RuntimeError("publication reservation was lost")
 
     def abandon_publication(self, case_id: str, source_memory_id: str) -> None:
@@ -172,9 +184,10 @@ class StateRepository:
             )
 
     def find_publication(self, case_id: str, source_memory_id: str) -> dict[str, Any] | None:
-        row = self._connection.execute(
-            "SELECT * FROM demo_publications WHERE case_id = ? AND source_memory_id = ?", (case_id, source_memory_id)
-        ).fetchone()
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM demo_publications WHERE case_id = ? AND source_memory_id = ?", (case_id, source_memory_id)
+            ).fetchone()
         return dict(row) if row else None
 
     def create_access_session(self, principal: str, ttl_seconds: int) -> tuple[str, str]:
@@ -275,9 +288,10 @@ class StateRepository:
             )
 
     def pending_cleanup(self, case_id: str) -> list[dict[str, Any]]:
-        rows = self._connection.execute(
-            "SELECT * FROM demo_cleanup_tasks WHERE case_id = ? AND status = 'pending' ORDER BY created_at", (case_id,)
-        ).fetchall()
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM demo_cleanup_tasks WHERE case_id = ? AND status = 'pending' ORDER BY created_at", (case_id,)
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def clear_completed_cleanup(self, case_id: str) -> None:
@@ -293,7 +307,8 @@ class StateRepository:
             self._connection.execute("DELETE FROM demo_cases WHERE case_id = ?", (case_id,))
 
     def case_ids(self) -> list[str]:
-        rows = self._connection.execute("SELECT case_id FROM demo_cases ORDER BY created_at").fetchall()
+        with self._lock:
+            rows = self._connection.execute("SELECT case_id FROM demo_cases ORDER BY created_at").fetchall()
         return [str(row["case_id"]) for row in rows]
 
     def clear_all(self) -> None:
@@ -309,13 +324,14 @@ class StateRepository:
 
     def aggregate_metrics(self) -> dict[str, int]:
         """Return aggregate-only metrics; event payload text is never exposed."""
-        rows = self._connection.execute("SELECT type, payload_json FROM demo_events").fetchall()
-        counts = {
-            "cases_total": int(self._connection.execute("SELECT COUNT(*) FROM demo_cases").fetchone()[0]),
-            "cases_ready": int(self._connection.execute("SELECT COUNT(*) FROM demo_cases WHERE status = 'ready'").fetchone()[0]),
-            "events_total": len(rows), "publications_total": 0, "answers_total": 0,
-            "fallbacks_total": 0, "retrievals_total": 0, "retrieval_duration_ms_total": 0,
-        }
+        with self._lock:
+            rows = self._connection.execute("SELECT type, payload_json FROM demo_events").fetchall()
+            counts = {
+                "cases_total": int(self._connection.execute("SELECT COUNT(*) FROM demo_cases").fetchone()[0]),
+                "cases_ready": int(self._connection.execute("SELECT COUNT(*) FROM demo_cases WHERE status = 'ready'").fetchone()[0]),
+                "events_total": len(rows), "publications_total": 0, "answers_total": 0,
+                "fallbacks_total": 0, "retrievals_total": 0, "retrieval_duration_ms_total": 0,
+            }
         for row in rows:
             event_type = str(row["type"])
             if event_type == "memory.published":
@@ -334,7 +350,8 @@ class StateRepository:
 
     def operational_metrics(self) -> dict[str, int]:
         """Small gauges intended for a Prometheus scrape, never identifiers."""
-        return {
-            "sse_connections_active": int(self._connection.execute("SELECT COUNT(*) FROM demo_sse_connections").fetchone()[0]),
-            "cleanup_tasks_pending": int(self._connection.execute("SELECT COUNT(*) FROM demo_cleanup_tasks WHERE status = 'pending'").fetchone()[0]),
-        }
+        with self._lock:
+            return {
+                "sse_connections_active": int(self._connection.execute("SELECT COUNT(*) FROM demo_sse_connections").fetchone()[0]),
+                "cleanup_tasks_pending": int(self._connection.execute("SELECT COUNT(*) FROM demo_cleanup_tasks WHERE status = 'pending'").fetchone()[0]),
+            }
