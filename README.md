@@ -205,10 +205,11 @@ docker compose up --build
 - **活动口令**：公网展示时设置非空 `DEMO_ACCESS_KEY`，操作端 / 大屏端会要求一次性口令，受保护 API 与 SSE 也会校验；浏览器用口令换取 HttpOnly 会话 Cookie，**SSE URL 不含口令**。请把 Compose 部署在提供 HTTPS 的反代 / 负载均衡之后，并设置 `DEMO_ACCESS_COOKIE_SECURE=true`；不要把 `.env` 或口令打进前端构建产物。
 - **P4 公开材料分析**只接收公告板检索结果，绝不枚举或检索私有空间；「反面教材」fixture 是进程内隔离的，且仅在关闭自由耳语时可用。边界与开关见 [`docs/P4_RESULT.md`](./docs/P4_RESULT.md)。
 
-## 文档
+## 相关技术框架
 
-- [`docs/DESIGN.md`](./docs/DESIGN.md) —— 界面设计系统（暖色编辑式视觉语言）
-- [`docs/runbook.md`](./docs/runbook.md) —— 现场故障手册与活动后清理
-- [`docs/recording.md`](./docs/recording.md) —— 离线录屏（纯内存 + 确定性证据模式）
-- [`docs/P4_RESULT.md`](./docs/P4_RESULT.md) —— 高级实验室的交付与安全边界
-- [`docs/adr/`](./docs/adr/) —— 架构决策记录（React UI、公告板复制、SSE、确定性作答、SeekDB 传输）
+本项目依赖或集成的核心技术框架：
+
+1. **PowerMem** — [https://github.com/oceanbase/powermem](https://github.com/oceanbase/powermem)
+2. **SeekDB** — [https://www.seekdb.ai/](https://www.seekdb.ai/)（GitHub：[https://github.com/oceanbase/seekdb](https://github.com/oceanbase/seekdb)）
+3. **DeepAgents** — [https://github.com/langchain-ai/deepagents](https://github.com/langchain-ai/deepagents)
+4. **StepFun 开放平台** — [https://platform.stepfun.com/](https://platform.stepfun.com/)
