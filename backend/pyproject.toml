@@ -13,7 +13,7 @@ dependencies = [
   "pydantic==2.12.4",
   "pydantic-settings==2.14.2",
   "httpx[socks]==0.28.1",
-  "openai==2.46.0",
+  "openai==2.50.0",
   "powermem==1.1.7",
   # PowerMem 1.1.7 requires greenlet <3 on Python 3.11.  Keep the lock
   # resolver from selecting an incompatible transitive release.
