@@ -16,7 +16,7 @@ dependencies = [
   # Transitive dependencies pinned explicitly to keep the audit gate green.
   "aiohttp==3.14.3",
   "cryptography==50.0.0",
-  "openai==2.50.0",
+  "openai==2.53.0",
   "powermem==1.1.7",
   # PowerMem 1.1.7 requires greenlet <3 on Python 3.11.  Keep the lock
   # resolver from selecting an incompatible transitive release.
