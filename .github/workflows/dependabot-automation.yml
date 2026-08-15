@@ -46,6 +46,8 @@ jobs:
           head_sha="$(jq -r '.head.sha' <<<"$pr")"
           state="$(jq -r '.state' <<<"$pr")"
           draft="$(jq -r '.draft' <<<"$pr")"
+          title="$(jq -r '.title' <<<"$pr")"
+          body="$(jq -r '.body // ""' <<<"$pr")"
 
           if [ "$author" != "dependabot[bot]" ] || [ "$base_ref" != "main" ] || \
              [ "$head_repo" != "$GITHUB_REPOSITORY" ] || [ "$state" != "open" ] || \
@@ -63,6 +65,21 @@ jobs:
 
           needs_python=false
           needs_npm=false
+          safe_update=false
+          maintainer_changes=false
+          if grep -qi 'maintainer changes' <<<"$body"; then
+            maintainer_changes=true
+          fi
+          # Dependabot titles always include the previous and new versions for
+          # individual updates. Treat anything that cannot be classified as
+          # manual rather than risking a major update.
+          if [[ "$title" =~ [Ff]rom[[:space:]]+v?([0-9]+)[^[:space:]]*[[:space:]]+to[[:space:]]+v?([0-9]+) ]]; then
+            if [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
+              safe_update=true
+            fi
+          else
+            echo "::notice title=Manual Dependabot review::Could not determine a major version from PR #${pr_number}'s title."
+          fi
           while IFS= read -r path; do
             case "$path" in
               backend/pyproject.toml|backend/requirements.lock)
@@ -87,10 +104,17 @@ jobs:
             echo "head_sha=${head_sha}"
             echo "needs_python=${needs_python}"
             echo "needs_npm=${needs_npm}"
+            echo "safe_update=${safe_update}"
+            echo "maintainer_changes=${maintainer_changes}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Require the narrowly scoped automation token
-        if: steps.pr.outputs.eligible == 'true'
+      - name: Require the narrowly scoped automation token when an action is needed
+        if: >-
+          steps.pr.outputs.eligible == 'true' &&
+          (steps.pr.outputs.needs_python == 'true' ||
+           steps.pr.outputs.needs_npm == 'true' ||
+           (steps.pr.outputs.safe_update == 'true' &&
+            steps.pr.outputs.maintainer_changes != 'true'))
         env:
           DEPENDENCY_AUTOMATION_TOKEN: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
         run: |
@@ -154,23 +178,13 @@ jobs:
           git push origin "HEAD:${HEAD_REF}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Read Dependabot update metadata
-        id: metadata
-        if: steps.pr.outputs.eligible == 'true' && steps.lock.outputs.changed != 'true' && github.event.workflow_run.conclusion == 'success'
-        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
-        with:
-          github-token: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
-          # The preceding lock-file commit is created by this trusted workflow.
-          skip-commit-verification: true
-
       - name: Queue safe updates for squash merge
         if: >-
           steps.pr.outputs.eligible == 'true' &&
           steps.lock.outputs.changed != 'true' &&
           github.event.workflow_run.conclusion == 'success' &&
-          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-           steps.metadata.outputs.update-type == 'version-update:semver-minor') &&
-          steps.metadata.outputs.maintainer-changes != 'true'
+          steps.pr.outputs.safe_update == 'true' &&
+          steps.pr.outputs.maintainer_changes != 'true'
         env:
           GH_TOKEN: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}

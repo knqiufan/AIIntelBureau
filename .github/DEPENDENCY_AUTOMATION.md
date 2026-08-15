@@ -1,8 +1,8 @@
 # Dependabot automation
 
-Dependabot groups minor and patch updates by ecosystem.  After the existing
-`CI quality gates` workflow finishes, `dependabot-automation.yml` performs the
-following in a trusted default-branch workflow:
+After the existing `CI quality gates` workflow finishes,
+`dependabot-automation.yml` performs the following in a trusted default-branch
+workflow:
 
 1. It accepts only open, non-draft Dependabot pull requests targeting `main`
    from this repository and rejects any change outside the dependency manifests,
@@ -10,8 +10,9 @@ following in a trusted default-branch workflow:
 2. For Python and npm updates, it recreates the generated lock file without npm
    lifecycle scripts, and pushes a lock-only commit when needed.
 3. It waits for the CI run for that exact commit to succeed, then queues only
-   minor and patch updates for squash merge. Major updates and PRs that report
-   maintainer changes always remain for manual review.
+   updates whose Dependabot title has the same numeric major version on both
+   sides of `from ... to ...` for squash merge. Major, unparseable, and
+   maintainer-change updates always remain for manual review.
 
 ## One-time repository setup
 
@@ -29,10 +30,10 @@ Do not use a personal all-repository token. The standard `GITHUB_TOKEN` cannot
 be used for this job: commits it creates do not start the follow-up CI run that
 must validate regenerated locks.
 
-Repository auto-merge must also be enabled. The workflow uses a full SHA pin for
-the metadata action and intentionally runs from `workflow_run`, rather than a
-PR-triggered write workflow, so a Dependabot PR never receives write credentials
-or repository secrets.
+Repository auto-merge must also be enabled. A major GitHub Actions update simply
+reports as manual even before this secret exists. The workflow intentionally runs
+from `workflow_run`, rather than a PR-triggered write workflow, so a Dependabot
+PR never receives write credentials or repository secrets.
 
 ## Operations
 
