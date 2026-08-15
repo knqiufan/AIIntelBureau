@@ -20,6 +20,7 @@ BLOCKED_TOOL_NAMES = frozenset({
     "read_file",
     "write_file",
     "edit_file",
+    "delete",
     "glob",
     "grep",
     "execute",

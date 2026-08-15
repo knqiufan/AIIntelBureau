@@ -18,7 +18,7 @@ from .settings import Settings
 
 
 BLOCKED_TOOL_NAMES = frozenset({
-    "write_todos", "ls", "read_file", "write_file", "edit_file", "glob",
+    "write_todos", "ls", "read_file", "write_file", "edit_file", "delete", "glob",
     "grep", "execute", "task",
 })
 
