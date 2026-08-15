@@ -24,7 +24,7 @@ dependencies = [
   "pyobvector[pyseekdb]==0.2.29",
   # pyseekdb leaves this Linux runtime dependency unpinned in its metadata;
   # declare it here so pip's hash-enforced production install remains closed.
-  "pylibseekdb==1.3.0.post3; sys_platform == 'linux'",
+  "pylibseekdb==1.3.0.post4; sys_platform == 'linux'",
   # VertexAI leaves the platform package unbounded; pin the patched release.
   "google-cloud-aiplatform==1.163.0",
   "deepagents==0.7.1",
