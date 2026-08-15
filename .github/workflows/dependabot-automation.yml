@@ -144,7 +144,7 @@ jobs:
       - name: Regenerate the Python lock file
         if: steps.pr.outputs.eligible == 'true' && steps.pr.outputs.needs_python == 'true'
         run: >-
-          uv pip compile backend/pyproject.toml --extra test --python-version 3.11
+          uv pip compile --quiet backend/pyproject.toml --extra test --python-version 3.11
           --python-platform linux --generate-hashes --output-file backend/requirements.lock
 
       - name: Set up Node.js
