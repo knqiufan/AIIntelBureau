@@ -1,0 +1,178 @@
+name: Automate trusted Dependabot updates
+
+on:
+  workflow_run:
+    workflows: ["CI quality gates"]
+    types: [completed]
+
+# This workflow runs only from the default branch. It never runs pull-request
+# code until the PR is confirmed to be a same-repository Dependabot change with
+# an allow-listed file set.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  synchronize-and-merge:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: dependabot-automation-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    steps:
+      - name: Identify and validate the Dependabot pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          pr_number="$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")"
+          if [ -z "$pr_number" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "No pull request is associated with this CI run."
+            exit 0
+          fi
+
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          author="$(jq -r '.user.login' <<<"$pr")"
+          base_ref="$(jq -r '.base.ref' <<<"$pr")"
+          head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr")"
+          head_ref="$(jq -r '.head.ref' <<<"$pr")"
+          head_sha="$(jq -r '.head.sha' <<<"$pr")"
+          state="$(jq -r '.state' <<<"$pr")"
+          draft="$(jq -r '.draft' <<<"$pr")"
+
+          if [ "$author" != "dependabot[bot]" ] || [ "$base_ref" != "main" ] || \
+             [ "$head_repo" != "$GITHUB_REPOSITORY" ] || [ "$state" != "open" ] || \
+             [ "$draft" != "false" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "PR #${pr_number} is not an eligible same-repository Dependabot update."
+            exit 0
+          fi
+
+          if [ "$head_sha" != "$RUN_HEAD_SHA" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "PR #${pr_number} changed after this CI run; waiting for the newer run."
+            exit 0
+          fi
+
+          needs_python=false
+          needs_npm=false
+          while IFS= read -r path; do
+            case "$path" in
+              backend/pyproject.toml|backend/requirements.lock)
+                needs_python=true
+                ;;
+              web/package.json|web/package-lock.json)
+                needs_npm=true
+                ;;
+              .github/workflows/*.yml|.github/workflows/*.yaml)
+                ;;
+              *)
+                echo "::error title=Unexpected Dependabot change::PR #${pr_number} changes a non-allow-listed path: ${path}"
+                exit 1
+                ;;
+            esac
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" --jq '.[].filename')
+
+          {
+            echo "eligible=true"
+            echo "number=${pr_number}"
+            echo "head_ref=${head_ref}"
+            echo "head_sha=${head_sha}"
+            echo "needs_python=${needs_python}"
+            echo "needs_npm=${needs_npm}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require the narrowly scoped automation token
+        if: steps.pr.outputs.eligible == 'true'
+        env:
+          DEPENDENCY_AUTOMATION_TOKEN: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
+        run: |
+          if [ -z "$DEPENDENCY_AUTOMATION_TOKEN" ]; then
+            echo "::error title=Dependency automation needs a token::Add the DEPENDENCY_AUTOMATION_TOKEN repository secret as documented in .github/DEPENDENCY_AUTOMATION.md."
+            exit 1
+          fi
+
+      - name: Check out the validated pull request head
+        if: steps.pr.outputs.eligible == 'true' && (steps.pr.outputs.needs_python == 'true' || steps.pr.outputs.needs_npm == 'true')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          token: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Python
+        if: steps.pr.outputs.eligible == 'true' && steps.pr.outputs.needs_python == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install the locked uv release
+        if: steps.pr.outputs.eligible == 'true' && steps.pr.outputs.needs_python == 'true'
+        run: python -m pip install --disable-pip-version-check "uv==0.11.15"
+
+      - name: Regenerate the Python lock file
+        if: steps.pr.outputs.eligible == 'true' && steps.pr.outputs.needs_python == 'true'
+        run: >-
+          uv pip compile backend/pyproject.toml --extra test --python-version 3.11
+          --python-platform linux --generate-hashes --output-file backend/requirements.lock
+
+      - name: Set up Node.js
+        if: steps.pr.outputs.eligible == 'true' && steps.pr.outputs.needs_npm == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Regenerate the npm lock file without lifecycle scripts
+        if: steps.pr.outputs.eligible == 'true' && steps.pr.outputs.needs_npm == 'true'
+        run: npm --prefix web install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Commit synchronized lock files
+        id: lock
+        if: steps.pr.outputs.eligible == 'true' && (steps.pr.outputs.needs_python == 'true' || steps.pr.outputs.needs_npm == 'true')
+        env:
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+
+          git add backend/requirements.lock web/package-lock.json
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Dependency locks are already synchronized."
+            exit 0
+          fi
+
+          git config user.name "dependency-automation[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(deps): synchronize generated locks"
+          git push origin "HEAD:${HEAD_REF}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Read Dependabot update metadata
+        id: metadata
+        if: steps.pr.outputs.eligible == 'true' && steps.lock.outputs.changed != 'true' && github.event.workflow_run.conclusion == 'success'
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+        with:
+          github-token: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
+          # The preceding lock-file commit is created by this trusted workflow.
+          skip-commit-verification: true
+
+      - name: Queue safe updates for squash merge
+        if: >-
+          steps.pr.outputs.eligible == 'true' &&
+          steps.lock.outputs.changed != 'true' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+           steps.metadata.outputs.update-type == 'version-update:semver-minor') &&
+          steps.metadata.outputs.maintainer-changes != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDENCY_AUTOMATION_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash --delete-branch --match-head-commit "$HEAD_SHA"
