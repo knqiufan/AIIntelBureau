@@ -193,6 +193,7 @@ certifi==2026.7.22 \
     #   google-cloud-aiplatform
     #   httpcore
     #   httpx
+    #   langchain-openai
     #   requests
 cffi==2.1.0 \
     --hash=sha256:02cb7ff33ded4f1532476731f89ede53e2e488a8e6205515a82144246ffa7dcc \
@@ -1150,9 +1151,9 @@ langchain-anthropic==1.5.6 \
     --hash=sha256:648fdab25573fc9d29543c4b4af1d682b7b6e548d452bb46e67ebc586e195629 \
     --hash=sha256:c358ed2ca90ef75254bb73a96b0a8a8ef0efc1deabe529ea06db6ff403001a27
     # via deepagents
-langchain-core==1.5.5 \
-    --hash=sha256:537037fd44ead7c1ffb9621011029ad2e347e051519d17f112d7bf7be12f4365 \
-    --hash=sha256:c08d78176113867e9a76acc1007d641cd68fa5682e9e0018980d062b4ae0777e
+langchain-core==1.6.0 \
+    --hash=sha256:d8bb924cd413955d9d3192ccced140407427c3ff51e50ffb941222648da92cb2 \
+    --hash=sha256:dc72e36678ed26683ec0ad8829b44011fba461d10f9b31dbd9110215e5ec2333
     # via
     #   deepagents
     #   langchain
@@ -1167,9 +1168,9 @@ langchain-google-genai==4.3.1 \
     --hash=sha256:0ebec25bfa62e75a65561b92fde5bdf8d87618bdda9371afe57d6b86bbb9cda8 \
     --hash=sha256:623cd4329f6a3e4e0397ccacc6fa355728362572688ff9a8e522bf21519e9964
     # via deepagents
-langchain-openai==1.4.3 \
-    --hash=sha256:351c9dd409ea3ba6562916a9f4655bbf1530e7d84e325b0681e984d63118850b \
-    --hash=sha256:416fbb39ccb62f0dac8180387a56b70f255b8c14c2ec3f774c4074dbcd9aae04
+langchain-openai==1.5.2 \
+    --hash=sha256:94b83536d943ff661bb74cf607534ff6e7c7d1c3b2235e33a1e09e3af1d77bfc \
+    --hash=sha256:ace745b422eecce5cec3f4a1802c95853de91a8283adbfcea4f2ac457f2a8181
     # via ai-intel-bureau-backend (backend/pyproject.toml)
 langchain-protocol==0.0.18 \
     --hash=sha256:70b53a86fbf9cedc863555effe44da192ab02d556ddbf2cf95b8873adcf41b5a \
