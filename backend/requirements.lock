@@ -458,9 +458,9 @@ cyclopts==4.22.1 \
 dashscope==1.26.4 \
     --hash=sha256:d56db91aecd4d981f2fdbdf526a2646a508c2f2b45347ed451cff6166ac17e3d
     # via powermem
-deepagents==0.7.5 \
-    --hash=sha256:a1be73d150929c5e826d67a05af6277748f25e4b53ae530b3fb1454df9e3ca95 \
-    --hash=sha256:ed44e956ed8e4ccd57203b9925c530707cdb815ffb56fe8ceb9b5b63d45a20c1
+deepagents==0.7.7 \
+    --hash=sha256:68b8f0c861a95065b3eda39b5c3748943e09500898bc39e7e689f0b7deba9f72 \
+    --hash=sha256:ddce2604799205ef51dc2c17fae613c9e162bbbc90206fcff2860c4e6f48bdb1
     # via ai-intel-bureau-backend (backend/pyproject.toml)
 detect-agent==0.3.0 \
     --hash=sha256:14c0ab0b90fca111eafea51d22f24fb187591e2a16eda8cbbe856a204ffdd7aa \
