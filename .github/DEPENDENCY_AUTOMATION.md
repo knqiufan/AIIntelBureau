@@ -37,7 +37,8 @@ PR never receives write credentials or repository secrets.
 
 ## Operations
 
-If the token is added after a Dependabot PR already exists, rerun its `CI quality
-gates` workflow once. If the workflow rejects a path, a major version, or a
+If the token has not been configured, the automation workflow emits a notice and
+does not mutate the PR. After adding it, rerun the PR's `CI quality gates`
+workflow once. If the workflow rejects a path, a major version, or a
 maintainer-change update, review and merge it manually. The lock-file check in
 CI remains the final protection against merging stale generated dependencies.
