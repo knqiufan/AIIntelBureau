@@ -10,7 +10,7 @@ dependencies = [
   "fastapi==0.141.1",
   "starlette==1.6.0",
   "uvicorn[standard]==0.52.4",
-  "pydantic==2.13.4",
+  "pydantic==2.13.5",
   "pydantic-settings==2.15.0",
   "httpx[socks]==0.28.1",
   # Transitive dependencies pinned explicitly to keep the audit gate green.
