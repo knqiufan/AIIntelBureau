@@ -70,7 +70,7 @@ jobs:
       - name: Build production images
         run: docker compose --profile production build
       - name: Generate source SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with: { path: ., format: cyclonedx-json, output-file: sbom.cdx.json }
       - name: Retain SBOM
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
