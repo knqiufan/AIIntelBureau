@@ -1178,9 +1178,9 @@ langchain-google-genai==4.3.7 \
     --hash=sha256:8a57f936b1fbde52776fdde6673fdabd99cfa5cbbb122a926f1cff0ba00f6bc6 \
     --hash=sha256:8d4b1aa8f2c2e17b8e790d34a7e9a7b8e7d13e9a00175679d17647c235104bf9
     # via deepagents
-langchain-openai==1.6.0 \
-    --hash=sha256:648112bbd135aa51d60d4aa2fd4ad353628a8d92a2f8e779244a0d9869a16f18 \
-    --hash=sha256:7c545cc1f2bee048a7e219f375b78cd820b32c876ccf825320e25e1e94132577
+langchain-openai==1.6.2 \
+    --hash=sha256:368e34ab3bdd30af422371b2f2f9346f21e79beae8b0823c253633819d1fd2f8 \
+    --hash=sha256:bec6d190e1e47e774c2be8728bc93457cef1ab2ec3295c277d8daefab434e880
     # via ai-intel-bureau-backend (backend/pyproject.toml)
 langchain-protocol==0.0.18 \
     --hash=sha256:70b53a86fbf9cedc863555effe44da192ab02d556ddbf2cf95b8873adcf41b5a \
