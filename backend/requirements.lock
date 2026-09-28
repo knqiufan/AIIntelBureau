@@ -1151,9 +1151,9 @@ jsonpointer==3.1.1 \
     --hash=sha256:0b801c7db33a904024f6004d526dcc53bbb8a4a0f4e32bfd10beadf60adf1900 \
     --hash=sha256:8ff8b95779d071ba472cf5bc913028df06031797532f08a7d5b602d8b2a488ca
     # via jsonpatch
-langchain==1.4.0 \
-    --hash=sha256:08da122a439f738f4c09a5158cfa3d2c1d8bea2d0bde7fbbf4aeb4d7f7fd9d80 \
-    --hash=sha256:af1dc0161d30944a52ec7844d9bf890d0497b12ec0703069f3503b4003cbbac3
+langchain==1.4.2 \
+    --hash=sha256:30a27c34cfa0004bf659dcdef488b99a9b90acb08bcc514a5a74264755da536c \
+    --hash=sha256:5b476418cacbfb8f0da6e63b3b263eefdcec13b48abd6117565a25728ec10b77
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   deepagents
@@ -1161,9 +1161,9 @@ langchain-anthropic==1.7.1 \
     --hash=sha256:ac087159e1356ae933d5443ded2bca72912a2ed34ea171520fcfdaddfb838687 \
     --hash=sha256:c461166def7b7d9d05de518d80afd041a6fcd0d49b07d3216d2a6b9a5069cb37
     # via deepagents
-langchain-core==1.6.2 \
-    --hash=sha256:1ec6d3a98f7c8cdbb5bb0deff86e7ca37e16bf4f8f49f022d10723656c62352d \
-    --hash=sha256:21e6c7cf097c68b777fd69ea00864f09bd9ca76ac73e3e3fa14e1ee366eb4711
+langchain-core==1.6.5 \
+    --hash=sha256:54c7b0e9314b9084fb04405bb33dc5d32986d512d92b7b8863899cd5f6267556 \
+    --hash=sha256:bdb059fef65473fd444558dbb18f50901657402c43ceed9dc0fdc7b76a393c6b
     # via
     #   deepagents
     #   langchain
