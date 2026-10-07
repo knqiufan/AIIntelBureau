@@ -29,7 +29,7 @@ dependencies = [
   # declare it here so pip's hash-enforced production install remains closed.
   "pylibseekdb==1.4.0.post1; sys_platform == 'linux'",
   # VertexAI leaves the platform package unbounded; pin the patched release.
-  "google-cloud-aiplatform==2.2.0",
+  "google-cloud-aiplatform==2.3.0",
   "deepagents==0.7.19",
   "langchain==1.4.2",
   "langchain-openai==1.6.7",
