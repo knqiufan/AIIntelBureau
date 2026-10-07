@@ -16,8 +16,11 @@ dependencies = [
   # Transitive dependencies pinned explicitly to keep the audit gate green.
   "aiohttp==3.14.3",
   "cryptography==50.0.1",
+  "multidict==6.9.1",
   "openai==2.54.0",
   "powermem==1.1.7",
+  "pyjwt==2.15.0",
+  "urllib3==2.8.0",
   # PowerMem 1.1.7 requires greenlet <3 on Python 3.11.  Keep the lock
   # resolver from selecting an incompatible transitive release.
   "greenlet==2.0.2; python_version < '3.12'",
@@ -31,6 +34,7 @@ dependencies = [
   "langchain==1.4.2",
   "langchain-openai==1.6.2",
   "langgraph==1.2.11",
+  "langgraph-sdk==0.4.4",
 ]
 
 [project.optional-dependencies]
