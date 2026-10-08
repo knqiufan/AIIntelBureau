@@ -1151,9 +1151,9 @@ jsonpointer==3.1.1 \
     --hash=sha256:0b801c7db33a904024f6004d526dcc53bbb8a4a0f4e32bfd10beadf60adf1900 \
     --hash=sha256:8ff8b95779d071ba472cf5bc913028df06031797532f08a7d5b602d8b2a488ca
     # via jsonpatch
-langchain==1.4.2 \
-    --hash=sha256:30a27c34cfa0004bf659dcdef488b99a9b90acb08bcc514a5a74264755da536c \
-    --hash=sha256:5b476418cacbfb8f0da6e63b3b263eefdcec13b48abd6117565a25728ec10b77
+langchain==1.4.3 \
+    --hash=sha256:0334066939dd1c7551889727ed2d09a72dea7a6aed2193ffb61817fb658d8921 \
+    --hash=sha256:aed5c1a7cd581f70ddc076b75fdbcbae8031b8373983f86efd287aa70798abc2
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   deepagents
