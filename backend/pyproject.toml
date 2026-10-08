@@ -30,7 +30,7 @@ dependencies = [
   "pylibseekdb==1.4.0.post1; sys_platform == 'linux'",
   # VertexAI leaves the platform package unbounded; pin the patched release.
   "google-cloud-aiplatform==2.3.0",
-  "deepagents==0.7.19",
+  "deepagents==0.7.21",
   "langchain==1.4.3",
   "langchain-openai==1.6.7",
   "langgraph==1.2.12",
