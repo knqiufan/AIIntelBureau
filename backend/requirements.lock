@@ -460,9 +460,9 @@ cyclopts==4.22.1 \
 dashscope==1.26.4 \
     --hash=sha256:d56db91aecd4d981f2fdbdf526a2646a508c2f2b45347ed451cff6166ac17e3d
     # via powermem
-deepagents==0.7.19 \
-    --hash=sha256:5cd493dbfb5b3d2877a20782a2c232857c44febdeb513aca82c2e0bea03379e7 \
-    --hash=sha256:e09026cc1f392fad1bf601b0a2c590e28e5c8aaca021eced15a6cf022fc8200b
+deepagents==0.7.21 \
+    --hash=sha256:49a594e9727c82e2354ed33bb4e656f94ec30715d1803de886792e8a6e2854e6 \
+    --hash=sha256:c8e6a89c75c62c232f6197a21af5f1298fda7eb7f1bfbc321bbabf1fa70eefed
     # via ai-intel-bureau-backend (backend/pyproject.toml)
 detect-agent==0.3.0 \
     --hash=sha256:14c0ab0b90fca111eafea51d22f24fb187591e2a16eda8cbbe856a204ffdd7aa \
@@ -1157,9 +1157,9 @@ langchain==1.4.3 \
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   deepagents
-langchain-anthropic==1.7.4 \
-    --hash=sha256:7d540300665a1c906986e505cdec41204e759f14dbd989f53f0c180d82624b94 \
-    --hash=sha256:eec1178389358eaa4cff4f3dd353f063746b8c61090cffe9236d9035df71e66c
+langchain-anthropic==1.7.5 \
+    --hash=sha256:6016f38e5c4bf12c16ecfa76abf133a978f459f4d2887b8e28435ae1ff00beb3 \
+    --hash=sha256:b21ef0e0c2d6175235a5b7eef4f5f89057df92d42dbfab66920a05605ef7173a
     # via deepagents
 langchain-core==1.6.7 \
     --hash=sha256:55842ca61ffb460787c6f62c8bf775275972e9b9a3fd9b2210931eb77d038e2d \
@@ -1210,9 +1210,9 @@ langgraph-sdk==0.4.4 \
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   langgraph
-langsmith==0.14.1 \
-    --hash=sha256:0b5cd2473420c9c5acef33a9bafe6c812a7cf96741e9a5af465b1d93bf77f7ae \
-    --hash=sha256:dcfd8a25ba72d8663024bd87df02e372e470f43e18f4a726f37fbacc772c0193
+langsmith==0.14.4 \
+    --hash=sha256:a340199fcd2af60358f09dd1d7011bf7282f0d46a98aaa101bc7a521746da764 \
+    --hash=sha256:ae0d98c2b0f9292ef7e12451d480937d79a0e7dcf2412ba847de6f053391b44a
     # via
     #   deepagents
     #   langchain-core
