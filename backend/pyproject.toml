@@ -19,7 +19,7 @@ dependencies = [
   "multidict==6.9.1",
   "openai==2.54.0",
   "powermem==1.1.7",
-  "pyjwt==2.15.0",
+  "pyjwt==2.15.1",
   "urllib3==2.8.0",
   # PowerMem 1.1.7 requires greenlet <3 on Python 3.11.  Keep the lock
   # resolver from selecting an incompatible transitive release.
