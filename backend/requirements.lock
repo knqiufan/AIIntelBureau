@@ -1194,9 +1194,9 @@ jsonpointer==3.1.1 \
     --hash=sha256:0b801c7db33a904024f6004d526dcc53bbb8a4a0f4e32bfd10beadf60adf1900 \
     --hash=sha256:8ff8b95779d071ba472cf5bc913028df06031797532f08a7d5b602d8b2a488ca
     # via jsonpatch
-langchain==1.4.3 \
-    --hash=sha256:0334066939dd1c7551889727ed2d09a72dea7a6aed2193ffb61817fb658d8921 \
-    --hash=sha256:aed5c1a7cd581f70ddc076b75fdbcbae8031b8373983f86efd287aa70798abc2
+langchain==1.4.6 \
+    --hash=sha256:7c3fbd5460ddc180115c10bbd385fbbde335fa166dd525ad22c0f599d13a9fad \
+    --hash=sha256:ad3ccfdc50005eb06bf1fcbae61aa69ad98fe8bc7d7c1b4ad88323b5bda4cbac
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   deepagents
@@ -1204,9 +1204,9 @@ langchain-anthropic==1.7.5 \
     --hash=sha256:6016f38e5c4bf12c16ecfa76abf133a978f459f4d2887b8e28435ae1ff00beb3 \
     --hash=sha256:b21ef0e0c2d6175235a5b7eef4f5f89057df92d42dbfab66920a05605ef7173a
     # via deepagents
-langchain-core==1.6.7 \
-    --hash=sha256:55842ca61ffb460787c6f62c8bf775275972e9b9a3fd9b2210931eb77d038e2d \
-    --hash=sha256:e12cb80b2008b0484c33d209c42d6290ef173f7be9d639b372aba0d438676cdd
+langchain-core==1.7.0 \
+    --hash=sha256:c34e53358b103cd73f43c63f5f46f9b5c6c3467efdffcdf134892b89020494e4 \
+    --hash=sha256:e82b24d7ac51fc74874baa29d6b3c0b8234880d4f3d897f8ff57fb80dfd9b07d
     # via
     #   deepagents
     #   langchain
@@ -1225,9 +1225,9 @@ langchain-openai==1.6.7 \
     --hash=sha256:b276a01b43c5287382f62070a4e1ca5bad5581fadab8c086e46b79daa4bf975d \
     --hash=sha256:e1b9b318fafc47b2dbc3485778aa23f809195065ee313611c188af29744b8e8e
     # via ai-intel-bureau-backend (backend/pyproject.toml)
-langchain-protocol==0.0.18 \
-    --hash=sha256:70b53a86fbf9cedc863555effe44da192ab02d556ddbf2cf95b8873adcf41b5a \
-    --hash=sha256:ec3e11782f1ed0c9db38e5a9ed01b0e7a0d3fba406faa8aef6594b73c56a63e6
+langchain-protocol==0.0.20 \
+    --hash=sha256:0f5bd002474265648e91161771a9e0438fe9480bd55a416e51af0f60070637ec \
+    --hash=sha256:3c935e5e46b0f6f9cb52f45ba7cfa53d1b9fa80c82c4a277d47f03e07f7385b1
     # via
     #   langchain-core
     #   langgraph-sdk
@@ -1253,9 +1253,9 @@ langgraph-sdk==0.4.6 \
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   langgraph
-langsmith==0.14.4 \
-    --hash=sha256:a340199fcd2af60358f09dd1d7011bf7282f0d46a98aaa101bc7a521746da764 \
-    --hash=sha256:ae0d98c2b0f9292ef7e12451d480937d79a0e7dcf2412ba847de6f053391b44a
+langsmith==0.14.12 \
+    --hash=sha256:9dafba7f615afa77204dc8afbb9c803e4ba1b55e96249f12c8f9aafb23fae6d0 \
+    --hash=sha256:b4d6a24ed74333095da476803ad9d22ee35f9dae1052cebf1e366d3889a9b675
     # via
     #   deepagents
     #   langchain-core
