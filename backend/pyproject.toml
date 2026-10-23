@@ -14,9 +14,11 @@ dependencies = [
   "pydantic-settings==2.15.0",
   "httpx[socks]==0.28.1",
   # Transitive dependencies pinned explicitly to keep the audit gate green.
-  "aiohttp==3.14.3",
+  "aiohttp==3.14.4",
+  "certifi==2026.10.19",
   "cryptography==50.0.1",
   "multidict==6.9.1",
+  "pillow==13.0.0",
   "openai==2.54.0",
   "powermem==1.1.7",
   "pyjwt==2.15.1",
@@ -31,10 +33,10 @@ dependencies = [
   # VertexAI leaves the platform package unbounded; pin the patched release.
   "google-cloud-aiplatform==2.4.0",
   "deepagents==0.7.21",
-  "langchain==1.4.3",
+  "langchain==1.4.6",
   "langchain-openai==1.6.7",
-  "langgraph==1.2.12",
-  "langgraph-sdk==0.4.4",
+  "langgraph==1.2.14",
+  "langgraph-sdk==0.4.6",
 ]
 
 [project.optional-dependencies]
