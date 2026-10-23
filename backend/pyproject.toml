@@ -35,7 +35,7 @@ dependencies = [
   "deepagents==0.7.21",
   "langchain==1.4.6",
   "langchain-openai==1.6.7",
-  "langgraph==1.2.12",
+  "langgraph==1.2.14",
   "langgraph-sdk==0.4.6",
 ]
 
