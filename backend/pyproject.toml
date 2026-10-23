@@ -7,10 +7,10 @@ name = "ai-intel-bureau-backend"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi==0.142.2",
-  "starlette==1.7.0",
+  "fastapi==0.150.0",
+  "starlette==1.9.0",
   "uvicorn[standard]==0.54.0",
-  "pydantic==2.13.5",
+  "pydantic==2.14.1",
   "pydantic-settings==2.15.0",
   "httpx[socks]==0.28.1",
   # Transitive dependencies pinned explicitly to keep the audit gate green.
@@ -34,7 +34,7 @@ dependencies = [
   "google-cloud-aiplatform==2.4.0",
   "deepagents==0.7.21",
   "langchain==1.4.6",
-  "langchain-openai==1.6.7",
+  "langchain-openai==1.7.2",
   "langgraph==1.2.14",
   "langgraph-sdk==0.4.6",
 ]
