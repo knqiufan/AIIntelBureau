@@ -5,8 +5,11 @@ updates:
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     # PowerMem 1.1.7 requires openai<3. Revisit after PowerMem adds OpenAI 3 support.
+    # aiohttp 3.14.x requires multidict<7. Revisit after aiohttp supports multidict 7.
     ignore:
       - dependency-name: openai
+        update-types: [version-update:semver-major]
+      - dependency-name: multidict
         update-types: [version-update:semver-major]
   - package-ecosystem: npm
     directory: /web
