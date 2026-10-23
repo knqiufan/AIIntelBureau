@@ -721,9 +721,9 @@ google-auth-httplib2==0.4.0 \
     --hash=sha256:8e55cfafa3358cba85f6cad4a886138e88e158d71e7e5c9ee5936a5c1507fb91 \
     --hash=sha256:d5b030a204b7a4b4d553ba9ca701b62481ee2b74419325580be70f7d85ffed35
     # via google-api-python-client
-google-cloud-aiplatform==2.3.0 \
-    --hash=sha256:3a1f52961dfe484f908c6833bc22b575c14f71d74fd67653ca26214f12ddcaca \
-    --hash=sha256:9c20e44b7b509bc92dc3364f71628999caf4f87792a40118ca3bae9c27b10d42
+google-cloud-aiplatform==2.4.0 \
+    --hash=sha256:41ef8ef68cbda2b2107cb562105fdd57249b386d06be11113efe3986f146b292 \
+    --hash=sha256:d4062b71182a2ca89a9837d2fd8bfa3481ff4c77ea5cb203a016a3442482d951
     # via
     #   ai-intel-bureau-backend (backend/pyproject.toml)
     #   vertexai
